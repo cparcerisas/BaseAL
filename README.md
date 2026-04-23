@@ -45,7 +45,7 @@ See the **Dependencies** list in [pyproject.toml](pyproject.toml).
 
 See the [docs](core/docs/) to get started working with the BaseAL framework, and developing active learning sampling strategies.
 
-If you are a participating in the BioDCASE data challenge, an `example.ipynb` is setup [here](core/docs/example.ipynb) with everything needed to get started.
+If you are a participating in the BioDCASE data challenge, an `biodcase_example.ipynb` is setup [here](core/docs/biodcase_example.ipynb) with everything needed to get started.
 
 ---
 
