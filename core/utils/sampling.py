@@ -86,7 +86,10 @@ class SamplingStrategy:
             'nn_disagreement',
             'margin_multilabel',
             'sklearn_coreset',
-            'sklearn_typiclust',
+            'sklearn_typiclust',   
+            'quantiles',
+            'quantiles_imbalanced',
+            'spatiotemporal_diversity'
         ]
 
         if method not in available_methods:
@@ -107,6 +110,9 @@ class SamplingStrategy:
             'margin_multilabel': self._margin_multilabel,
             'sklearn_coreset': self._sklearn_coreset,
             'sklearn_typiclust': self._sklearn_typiclust,
+            'quantiles': self._quantiles,
+            'quantiles_imbalanced': self._quantiles_imbalanced,
+            'spatiotemporal_diversity': self._spatiotemporal_diversity,
         }
 
         # Data attributes (see selct)
@@ -256,7 +262,119 @@ class SamplingStrategy:
         """
         # TODO: Implement your custom sampling logic here
         # For now, default to random sampling
-        logger.warning("Custom sampling not implemented, falling back to random sampling")
+        # logger.warning("Custom sampling not implemented, falling back to random sampling")
+        print('here I am')
+        return self._random()
+    
+
+    def _quantiles(self) -> np.ndarray:
+        """
+        Custom sampling template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+        # define the quantiles
+        quantiles = [0, 0.6, 0.875, 1]
+        n_classes = self.predictions.shape[1]
+        n_per_class = int(self.n_samples / n_classes)
+        n_per_quantile = max(int(n_per_class / (len(quantiles) + 1)), 1)
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples['utility']= np.zeros(len(samples))
+
+        for c in np.arange(n_classes): 
+            samples['quantile'] = pd.qcut(samples[c], quantiles, duplicates='drop')
+            for _, quantile in samples.groupby('quantile'): 
+                randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
+                samples.loc[randomly_selected_samples.index, 'utility'] = 1
+        
+        if samples.utility.sum() > self.n_samples: 
+            discarded_n_samples = samples.utility.sum() - self.n_samples
+            selected_samples = samples.loc[samples.utility == 1]
+            to_discard = selected_samples.sample(int(discarded_n_samples))
+            samples.loc[to_discard.index, 'utility'] = 0
+        return samples['utility'].values
+    
+    def _spatiotemporal_diversity(self) -> np.ndarray:
+        """
+        Custom sampling template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+
+        print('spatiotemporal')
+        return self._random()
+
+    def _quantiles_imbalanced(self) -> np.ndarray:
+        """
+        Custom sampling template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+        # TODO: Implement your custom sampling logic here
+        # For now, default to random sampling
+        # logger.warning("Custom sampling not implemented, falling back to random sampling")
+        print('imbalanced quantiles')
         return self._random()
     
     def _bald(self) -> np.ndarray:
