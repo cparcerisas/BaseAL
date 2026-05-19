@@ -293,14 +293,16 @@ class SamplingStrategy:
         Returns:
             utility: Array of utility scores for samples [0, 1]
         """
+        import matplotlib.pyplot as plt
         # define the quantiles
-        quantiles = [0, 0.6, 0.875, 1]
+        quantiles = [0, 0.5, 0.5, 0.95, 1]
         n_classes = self.predictions.shape[1]
         n_per_class = int(self.n_samples / n_classes)
         n_per_quantile = max(int(n_per_class / (len(quantiles) + 1)), 1)
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
         samples['utility']= np.zeros(len(samples))
+
 
         for c in np.arange(n_classes): 
             samples['quantile'] = pd.qcut(samples[c], quantiles, duplicates='drop')
@@ -309,6 +311,7 @@ class SamplingStrategy:
                 samples.loc[randomly_selected_samples.index, 'utility'] = 1
         
         if samples.utility.sum() > self.n_samples: 
+            print('Removing some of the selected samples randomly...')
             discarded_n_samples = samples.utility.sum() - self.n_samples
             selected_samples = samples.loc[samples.utility == 1]
             to_discard = selected_samples.sample(int(discarded_n_samples))
