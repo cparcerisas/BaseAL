@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 
 const leaderboardEntries = [
-  { team: 'Baseline', method: 'Random',      aulc: 0.40100,  compCostRelative: 1.0, wallTime: 0.00095,  annotationCost: 96.75  },
-  { team: 'Baseline', method: 'Margin',      aulc: 0.39900,  compCostRelative: 1.0, wallTime: 0.00249,  annotationCost: 125.50 },
-  { team: 'Baseline', method: 'CoreSet',     aulc: 0.42154,  compCostRelative: 1.0, wallTime: 6.34688,  annotationCost: 108.50 },
-  { team: 'Baseline', method: 'TypiCluster', aulc: 0.39080,  compCostRelative: 1.0, wallTime: 25.28352, annotationCost: 98.25  },
+  { team: 'Baseline', method: 'Random',      aulc: 0.39098,  compCostRelative: 1.0, wallTime: 0.00131,  annotationCost: 966.85  },
+  { team: 'Baseline', method: 'Margin',      aulc: 0.39914,  compCostRelative: 1.0, wallTime: 0.00307,  annotationCost: 1267.75 },
+  { team: 'Baseline', method: 'CoreSet',     aulc: 0.45985,  compCostRelative: 1.0, wallTime: 5.04364,  annotationCost: 1019.05 },
+  { team: 'Baseline', method: 'TypiCluster', aulc: 0.42331,  compCostRelative: 1.0, wallTime: 5.90751, annotationCost: 958.10  },
+  { team: 'HuoyuWang',     method: 'pareto_uwe_ff', aulc: 0.50585,  compCostRelative: 1.6, wallTime: 0.31470, annotationCost: 1137.65  },
 ];
 
 const teamMembers = [

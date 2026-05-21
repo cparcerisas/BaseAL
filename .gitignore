@@ -2,10 +2,12 @@
 ESC50_BASEAL
 ATBFL_BASEAL
 ATBFL_BASEAL_Data
+ATBFL_BASEAL_latest
 HSN_BASEAL
 POW_BASEAL
 UHH_BASEAL
 BirdSet_BASEAL
+BirdSet_BASEAL_latest
 ATBFL_BASEAL.zip
 *.wav
 *.npy
@@ -20,6 +22,8 @@ results
 test_data
 planning
 scripts
+core/baselines/participant
+core/baselines/original
 
 *.code-workspace
 /.vscode/

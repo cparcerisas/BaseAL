@@ -1225,12 +1225,10 @@ class ActiveLearner:
         last = self.training_history[-1] if self.training_history else {}
         epochs_per_cycle = last.get('epochs', None)
 
-        # Baseline config (fixed): batch_size=32, epochs=10, same model_parameters.
-        # n_cycles for baseline = max_budget // 32 (if budget provided) else actual n_cycles.
-        _BASELINE_EPOCHS     = 10
-        _BASELINE_BATCH_SIZE = 32
-        baseline_n_cycles = (max_budget // _BASELINE_BATCH_SIZE
-                             if max_budget is not None else n_cycles)
+        # Baseline config (fixed): 50 samples/cycle × 10 cycles = 500 samples, 10 epochs/cycle.
+        _BASELINE_EPOCHS  = 10
+        _BASELINE_CYCLES  = 10
+        baseline_n_cycles = _BASELINE_CYCLES
         cost_method   = (model_parameters * epochs_per_cycle * n_cycles
                          if epochs_per_cycle is not None else None)
         baseline_cost = model_parameters * _BASELINE_EPOCHS * baseline_n_cycles
