@@ -1,0 +1,117 @@
+submission_timestamp: '2026-05-21T10:30:40'
+author_lastname: baseline
+institute_abbreviation: BASEAL
+sampling_strategy: sklearn_coreset
+dataset: ATBFL_BASEAL_latest
+model: perch_v2
+config:
+  learning_rate: 0.001
+  model_parameters: 2373128
+  n_outer_repeats: 5
+  pretrain_samples: 0
+learning_curve:
+- cycle: 1
+  n_labeled: 50
+  mAP_mean: 0.407325
+  mAP_sd: 0.014926
+  aulc_mAP_mean: 0.203663
+  aulc_mAP_sd: 0.007463
+  annotation_cost: 116
+  sampling_time_s_mean: 0.079846
+  sampling_time_s_sd: 0.151957
+- cycle: 2
+  n_labeled: 100
+  mAP_mean: 0.458561
+  mAP_sd: 0.009497
+  aulc_mAP_mean: 0.318303
+  aulc_mAP_sd: 0.007533
+  annotation_cost: 119
+  sampling_time_s_mean: 5.20499
+  sampling_time_s_sd: 0.372185
+- cycle: 3
+  n_labeled: 150
+  mAP_mean: 0.471162
+  mAP_sd: 0.010735
+  aulc_mAP_mean: 0.367156
+  aulc_mAP_sd: 0.006872
+  annotation_cost: 131
+  sampling_time_s_mean: 5.240247
+  sampling_time_s_sd: 0.26215
+- cycle: 4
+  n_labeled: 200
+  mAP_mean: 0.485462
+  mAP_sd: 0.007142
+  aulc_mAP_mean: 0.394945
+  aulc_mAP_sd: 0.007152
+  annotation_cost: 113
+  sampling_time_s_mean: 5.23744
+  sampling_time_s_sd: 0.214098
+- cycle: 5
+  n_labeled: 250
+  mAP_mean: 0.488737
+  mAP_sd: 0.004925
+  aulc_mAP_mean: 0.413376
+  aulc_mAP_sd: 0.006808
+  annotation_cost: 129
+  sampling_time_s_mean: 5.348931
+  sampling_time_s_sd: 0.269308
+- cycle: 6
+  n_labeled: 300
+  mAP_mean: 0.484513
+  mAP_sd: 0.007836
+  aulc_mAP_mean: 0.425584
+  aulc_mAP_sd: 0.006562
+  annotation_cost: 110
+  sampling_time_s_mean: 5.420544
+  sampling_time_s_sd: 0.400925
+- cycle: 7
+  n_labeled: 350
+  mAP_mean: 0.485838
+  mAP_sd: 0.007939
+  aulc_mAP_mean: 0.434097
+  aulc_mAP_sd: 0.006591
+  annotation_cost: 118
+  sampling_time_s_mean: 5.442029
+  sampling_time_s_sd: 0.332584
+- cycle: 8
+  n_labeled: 400
+  mAP_mean: 0.484832
+  mAP_sd: 0.008496
+  aulc_mAP_mean: 0.440502
+  aulc_mAP_sd: 0.006635
+  annotation_cost: 131
+  sampling_time_s_mean: 5.540155
+  sampling_time_s_sd: 0.396166
+- cycle: 9
+  n_labeled: 450
+  mAP_mean: 0.488657
+  mAP_sd: 0.010555
+  aulc_mAP_mean: 0.44564
+  aulc_mAP_sd: 0.006782
+  annotation_cost: 118
+  sampling_time_s_mean: 5.377869
+  sampling_time_s_sd: 0.240473
+- cycle: 10
+  n_labeled: 500
+  mAP_mean: 0.490813
+  mAP_sd: 0.010613
+  aulc_mAP_mean: 0.450049
+  aulc_mAP_sd: 0.007063
+  annotation_cost: 122
+  sampling_time_s_mean: 5.672505
+  sampling_time_s_sd: 0.7611
+supplementary:
+  n_cycles: 10
+  n_outer_repeats: 5
+  total_annotation_cost_mean: 1202.0
+  total_annotation_cost_sd: 12.13
+  total_sampling_time_s_mean: 48.564555
+  total_sampling_time_s_sd: 1.464984
+  computational_cost:
+    model_parameters: 2373128
+    epochs_per_cycle: 10
+    n_cycles: 10
+    cost_method: 237312800
+    baseline_n_cycles: 10
+    baseline_cost: 237312800
+    relative_cost: 1.0
