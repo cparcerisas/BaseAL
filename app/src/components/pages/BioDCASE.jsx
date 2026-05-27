@@ -5,7 +5,8 @@ const leaderboardEntries = [
   { team: 'Baseline', method: 'Margin',      aulc: 0.39914,  compCostRelative: 1.0, wallTime: 0.00307,  annotationCost: 1267.75 },
   { team: 'Baseline', method: 'CoreSet',     aulc: 0.45985,  compCostRelative: 1.0, wallTime: 5.04364,  annotationCost: 1019.05 },
   { team: 'Baseline', method: 'TypiCluster', aulc: 0.42331,  compCostRelative: 1.0, wallTime: 5.90751, annotationCost: 958.10  },
-  { team: 'HuoyuWang',     method: 'pareto_uwe_ff', aulc: 0.50585,  compCostRelative: 1.6, wallTime: 0.31470, annotationCost: 1137.65  },
+  { team: 'HuoyuWang', method: 'pareto_uwe_ff', aulc: 0.50585,  compCostRelative: 1.6, wallTime: 0.31470, annotationCost: 1137.65  },
+  { team: 'WayneYang', method: 'safe_rarity', aulc: 0.49079, compCostRelative: 1.0, wallTime: 0.074, annotationCost: 1085.65 }
 ];
 
 const teamMembers = [
