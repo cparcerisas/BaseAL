@@ -13,6 +13,10 @@ import faiss
 logger = logging.getLogger(__name__)
 
 
+
+
+
+
 def densityEstimation(embeddings: Optional[np.ndarray] = None, method='cosine', beta: int = 1, k: int = 20):
     if method == 'cosine':
         similarity = cosine_similarity(embeddings)
@@ -26,6 +30,7 @@ def densityEstimation(embeddings: Optional[np.ndarray] = None, method='cosine', 
         raise Exception("Unknown similarity estimation method, ")
 
     density = np.power(np.sum(similarity, axis=0) / np.sum(similarity, axis=0).max(), beta)
+    
     return density
 
 
@@ -271,7 +276,7 @@ class SamplingStrategy:
 
     def _quantiles(self) -> np.ndarray:
         """
-        Custom sampling template.
+        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
 
         INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
         ===============================================
@@ -792,3 +797,105 @@ class SamplingStrategy:
 
         logger.info(f"sklearn_typiclust - typicality min: {util_scores.min():.4f}, max: {util_scores.max():.4f}")
         return utility.astype(np.float32)
+
+
+
+if __name__ ==  "__main__":
+
+    print("=" * 60)
+    print("SamplingStrategy - Unit Test on Dummy Data")
+    print("=" * 60)
+
+    # --- Dummy data setup ---
+    N_SAMPLES    = 20
+    N_TOTAL      = 200   # total samples in the pool
+    N_UNLABELED  = 160    # samples without labels
+    N_LABELED    = 40    # samples already labeled
+    N_CLASSES    = 8
+    EMBED_DIM    = 16
+    RANDOM_STATE = 42
+
+    rng = np.random.default_rng(RANDOM_STATE)
+
+    all_indices = list(range(N_TOTAL))
+    labeled_indices = all_indices[:N_LABELED]
+    unlabeled_indices = all_indices[N_LABELED:]
+
+    # Softmax-like predictions (rows sum to 1)
+    raw = rng.random((N_TOTAL, N_CLASSES))
+
+    # # Create a dummy prediction array with size N_TOTAL x N_CLASSES and values increasing by step from 0 to 1
+    # predictions = np.arange(0, 1, 1/N_TOTAL, dtype=np.float32)
+    # # Concatenate the predictions for each class
+    # predictions = np.tile(predictions, (N_CLASSES, 1)).T
+
+    # Create long-tail predictions using a Dirichlet distribution
+    # Low concentration (alpha < 1) produces sparse, peaked distributions
+    # mimicking a model that is often confident about one class
+    alpha = np.ones(N_CLASSES) * 0.4
+    raw_predictions = rng.dirichlet(alpha, size=N_TOTAL).astype(np.float32)
+    predictions = raw_predictions
+
+    embeddings = rng.standard_normal((N_TOTAL, EMBED_DIM)).astype(np.float32)
+    labels = rng.integers(0, N_CLASSES, size=N_TOTAL)
+
+    # Minimal metadata DataFrame
+    metadata = pd.DataFrame({
+        'sample_id': all_indices,
+        'split':     ['labeled'] * N_LABELED + ['unlabeled'] * N_UNLABELED,
+    })
+
+    # --- Methods to test ---
+    method_to_test = 'quantiles'
+    print(f"\n--- Testing method: '{method_to_test}' ---")
+
+    strategy = SamplingStrategy(method=method_to_test, n_samples=N_SAMPLES, random_state=RANDOM_STATE)
+
+    selected, utility = strategy.select(
+        unlabeled_indices=unlabeled_indices,
+        predictions=predictions,
+        embeddings=embeddings,
+        labeled_indices=labeled_indices,
+        labels=labels,
+        metadata=metadata,
+    )
+
+    print(f"Selected indices : {selected}")
+    print(f"Utility : {utility}")
+    print(f"Prediction selected samples: {predictions[selected]}")
+
+    print("\n" + "=" * 60)
+
+    # Plot the distribution of samples and selected samples
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+
+    class_names = [f"Class {i}" for i in range(N_CLASSES)]
+    fig, axes = plt.subplots(1, N_CLASSES, figsize=(4 * N_CLASSES, 4), sharey=True)
+
+    unlabeled_preds = predictions[unlabeled_indices]  # shape: (N_UNLABELED, N_CLASSES)
+    selected_preds  = predictions[selected]           # shape: (N_SAMPLES, N_CLASSES)
+
+    for i, ax in enumerate(axes):
+        data = unlabeled_preds[:, i]
+        kde  = gaussian_kde(data, bw_method='scott')
+        x    = np.linspace(data.min(), data.max(), 300)
+
+        ax.plot(x, kde(x), color='steelblue', linewidth=2, label='Unlabeled pool')
+        ax.fill_between(x, kde(x), alpha=0.15, color='steelblue')
+
+        # Selected samples as dots on the x-axis (rug) at y=0
+        sel_probs = selected_preds[:, i]
+        ax.scatter(sel_probs, np.zeros_like(sel_probs),
+                color='tomato', s=60, zorder=5,
+                marker='|', linewidths=2, label='Selected')
+
+        ax.set_title(class_names[i])
+        ax.set_xlabel("Predicted probability")
+        if i == 0:
+            ax.set_ylabel("Density")
+        ax.legend(fontsize=8)
+
+    fig.suptitle(f"Prediction density — method: '{method_to_test}'", fontsize=13)
+    plt.tight_layout()
+    plt.show()

@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 from pathlib import Path
 import pandas as pd
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Callable
 import logging
 import warnings
 import os
@@ -387,6 +387,7 @@ class ActiveLearner:
         mc_dropout_passes: int = 1,
         verbose: bool = True,
         metadata_path: Optional[Path] = None,
+        warmup_method: Optional[str] = None
     ):
         """
         Initialize active learner
@@ -413,6 +414,7 @@ class ActiveLearner:
                            annotations_path) is passed to sampling strategies instead of
                            the labels CSV, preventing participants from accessing
                            ground-truth labels for unlabeled samples.
+            warmup_method: Optional warm-up method, choices are ['densityEstimation', 'kmeans']
         """
         if not verbose:
             logger.setLevel(logging.WARNING)
@@ -426,6 +428,7 @@ class ActiveLearner:
         self.device = device
         self.repeats = repeats # TODO: potentially adjust for MC
         self.pretrain_samples = pretrain_samples or 0
+        self.warmup_method = warmup_method
 
         # Model dropout for MC
         self.dropout_rate = dropout_rate
@@ -518,7 +521,8 @@ class ActiveLearner:
 
         # Pre-training warm-up: select high-density samples if specified
         if pretrain_samples is not None and pretrain_samples > 0:
-            self._pretrain_warmup(pretrain_samples)
+
+            self._pretrain_warmup(pretrain_samples, self.warmup_method)
             logger.info(f"Pre-training warm-up: selected {len(self.labeled_indices)} high-density samples")
 
         # Per-sample uncertainties (updated after each sampling step)
@@ -689,7 +693,7 @@ class ActiveLearner:
 
         return embeddings, labels, label_to_idx, idx_to_label, annotations_df, validation_mask
 
-    def _pretrain_warmup(self, n_samples: int):
+    def _pretrain_warmup(self, n_samples: int, method: str = 'densityEstimation'):
         """
         Pre-training warm-up: select high-density samples for initial training
 
@@ -699,31 +703,91 @@ class ActiveLearner:
         Args:
             n_samples: Number of high-density samples to pre-select
         """
-        from .utils.sampling import densityEstimation # TODO: generalise to other warmup methods
 
-        # Candidate pool: all non-validation samples
-        candidate_indices = np.array(sorted(set(range(len(self.embeddings))) - self.validation_indices))
-        n_samples = min(n_samples, len(candidate_indices))
+        if method == 'densityEstimation':
+            from .utils.sampling import densityEstimation # TODO: generalise to other warmup methods
 
-        logger.info(f"Computing density estimation for {len(candidate_indices)} candidate samples...")
+            print(f"Pre-training warm-up using density estimation with {n_samples}")
 
-        # Compute density using KNN method (samples with more neighbors = higher density)
-        # Using k=20 as a reasonable default for neighbor count
-        density_scores = densityEstimation(
-            embeddings=self.embeddings[candidate_indices],
-            method='knn',
-            k=min(20, len(candidate_indices) - 1),  # Ensure k < n_samples
-            beta=1
-        )
+            # Candidate pool: all non-validation samples
+            candidate_indices = np.array(sorted(set(range(len(self.embeddings))) - self.validation_indices))
+            n_samples = min(n_samples, len(candidate_indices))
 
-        logger.info(f"Density scores - min: {density_scores.min():.4f}, max: {density_scores.max():.4f}, mean: {density_scores.mean():.4f}")
+            logger.info(f"Computing density estimation for {len(candidate_indices)} candidate samples...")
 
-        # Select samples with highest density and map back to global indices
-        top_local = np.argsort(density_scores)[-n_samples:]
-        top_density_indices = candidate_indices[top_local]
+            # Compute density using KNN method (samples with more neighbors = higher density)
+            # Using k=20 as a reasonable default for neighbor count
+            density_scores = densityEstimation(
+                embeddings=self.embeddings[candidate_indices],
+                method='knn',
+                k=min(20, len(candidate_indices) - 1),  # Ensure k < n_samples
+                beta=1
+            )
+
+            logger.info(f"Density scores - min: {density_scores.min():.4f}, max: {density_scores.max():.4f}, mean: {density_scores.mean():.4f}")
+
+            # Select samples with highest density and map back to global indices
+            top_local = np.argsort(density_scores)[-n_samples:]
+            top_indices = candidate_indices[top_local]
+
+        elif method == 'kmeans':
+            from sklearn.cluster import KMeans
+            from sklearn.preprocessing import normalize
+
+            #@param: change to True to apply kmeans on UMAP embeddings instead of the whole embeddings
+            use_umap = False 
+
+            # Force the number of samples to be equal to the number of classes in the dataset instead of the predefined n_samples_pretrained
+            n_samples = int(len(self.label_to_idx))
+
+            print(f"Pre-training warm-up using kmeans with {n_samples} samples")
+
+            candidate_indices = np.array(sorted(
+                set(range(len(self.embeddings))) - self.validation_indices
+            ))
+            n_samples = min(n_samples, len(candidate_indices))
+            embeddings = self.embeddings[candidate_indices]
+
+            # Normalise embeddings before clustering
+            embeddings_norm = normalize(embeddings, norm='l2')
+
+            if use_umap:
+                import umap
+                reducer = umap.UMAP(n_components=2, random_state=42)
+                embeddings_for_clustering = reducer.fit_transform(embeddings_norm)
+                print("UMAP embeddings shape computed")
+            else:
+                embeddings_for_clustering = embeddings_norm
+
+            kmeans = KMeans(n_clusters=n_samples, random_state=42, n_init='auto')
+            kmeans.fit(embeddings_for_clustering)
+
+            # For each centroid, pick the closest actual sample
+            centroids = kmeans.cluster_centers_
+            selected_local = []
+            for centroid in centroids:
+                dists = np.linalg.norm(embeddings_for_clustering - centroid, axis=1)
+                closest = np.argmin(dists)
+                selected_local.append(closest)
+
+            # Deduplicate (two centroids may map to the same sample)
+            selected_local = list(set(selected_local))
+            top_indices = candidate_indices[selected_local]
+
+            # # Plot check for sanity
+            # import matplotlib.pyplot as plt
+            # reducer = umap.UMAP(n_components=2, random_state=42)
+            # umap_embeddings = reducer.fit_transform(self.embeddings)
+            # plt.scatter(umap_embeddings[:, 0], umap_embeddings[:, 1])
+            # # plot the top_indices samples with a different color
+            # plt.scatter(umap_embeddings[top_indices, 0], umap_embeddings[top_indices, 1], c='red')
+            # plt.show()
+
+        else:
+            raise ValueError(f"Unknown warmup method: {method}")
 
         # Add these samples to labeled set
-        self.labeled_indices = set(top_density_indices.tolist())
+        self.labeled_indices = set(top_indices.tolist())
 
         # Remove from unlabeled set (validation indices already excluded)
         self.unlabeled_indices = set(candidate_indices.tolist()) - self.labeled_indices
