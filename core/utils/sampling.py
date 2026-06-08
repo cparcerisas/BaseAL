@@ -28,6 +28,105 @@ def densityEstimation(embeddings: Optional[np.ndarray] = None, method='cosine', 
     density = np.power(np.sum(similarity, axis=0) / np.sum(similarity, axis=0).max(), beta)
     return density
 
+def uniformEmbeddingSampling(embeddings: Optional[np.ndarray] = None, n_samples: int = 20, random_state: Optional[int] = None)-> np.ndarray:
+    '''
+        Uniform sampling in embedding space: selects samples that are uniformly distributed in the embedding space.
+
+        This implementation projects embeddings onto the two principal eigenvectors of the covariance
+        matrix, allocates the warmup budget between the two directions in proportion to their eigenvalues,
+        and samples roughly uniformly across quantile bins of each projection. The function returns a
+        utility array of shape (n_samples_total,) with 1.0 for selected items and 0.0 otherwise.
+
+        Args:
+            embeddings: Numpy array of shape (n_total, embedding_dim) containing the embeddings of the samples.
+            n_samples: Number of samples to select.
+            random_state: Optional random seed for reproducibility.
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1] where 1 = selected samples, 0 = non-selected samples.
+    '''
+    if embeddings is None:
+        raise ValueError("embeddings must be provided for uniformEmbeddingSampling")
+
+    n = embeddings.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    if n_samples >= n:
+        return np.ones(n, dtype=np.float32)
+
+    rng = np.random.default_rng(random_state)
+
+    # covariance and eigen decomposition (sort descending)
+    cov = embeddings.T @ embeddings
+    eigenvalues, eigenvectors = np.linalg.eig(cov)
+    idx = np.argsort(-eigenvalues)
+    eig1 = eigenvectors[:, idx[0]]
+    eig2 = eigenvectors[:, idx[1]] if eigenvectors.shape[1] > 1 else eig1
+    ev1 = float(eigenvalues[idx[0]])
+    ev2 = float(eigenvalues[idx[1]]) if eigenvalues.shape[0] > 1 else 0.0
+
+    proj1 = embeddings @ eig1
+    proj2 = embeddings @ eig2
+
+    # allocate samples proportionally to eigenvalues
+    total_ev = ev1 + ev2 if (ev1 + ev2) > 0 else 1.0
+    n1 = int(round(n_samples * (ev1 / total_ev)))
+    n1 = max(1, min(n_samples - 1, n1))
+    n2 = n_samples - n1
+
+    selected = []
+
+    def sample_from_projection(proj: np.ndarray, target_count: int):
+        if target_count <= 0:
+            return []
+        q_edges = np.linspace(0.0, 1.0, target_count + 1)
+        picks = []
+        for i in range(target_count):
+            lo_q = q_edges[i]
+            hi_q = q_edges[i + 1]
+            lo_val = np.quantile(proj, lo_q)
+            hi_val = np.quantile(proj, hi_q)
+            if i == target_count - 1:
+                idxs = np.where((proj >= lo_val) & (proj <= hi_val))[0]
+            else:
+                idxs = np.where((proj >= lo_val) & (proj < hi_val))[0]
+            if idxs.size == 0:
+                continue
+            if idxs.size == 1:
+                picks.append(int(idxs[0]))
+            else:
+                picks.append(int(rng.choice(idxs, size=1)[0]))
+        return picks
+
+    selected.extend(sample_from_projection(proj1, n1))
+    selected.extend(sample_from_projection(proj2, n2))
+
+    # unique while preserving order
+    seen = set()
+    uniq_selected = []
+    for s in selected:
+        if s not in seen:
+            seen.add(s)
+            uniq_selected.append(s)
+    selected = uniq_selected
+
+    # fill up if fewer than required
+    if len(selected) < n_samples:
+        remaining = np.setdiff1d(np.arange(n), np.array(selected, dtype=int))
+        if remaining.size > 0:
+            need = n_samples - len(selected)
+            more = rng.choice(remaining, size=min(need, remaining.size), replace=False)
+            selected.extend([int(x) for x in more])
+
+    # trim if oversubscribed
+    if len(selected) > n_samples:
+        selected = rng.choice(np.array(selected, dtype=int), size=n_samples, replace=False).tolist()
+
+    utility = np.zeros(n, dtype=np.float32)
+    utility[np.array(selected, dtype=int)] = 1.0
+    return utility
+
 
 def _sample_pool(unlabeled: np.ndarray, pool_size: int, rng: np.random.Generator) -> np.ndarray:
     if pool_size <= 0 or len(unlabeled) <= pool_size:
@@ -81,7 +180,7 @@ class SamplingStrategy:
             'margin',
             'custom',
             'bald',
-            # 'margin_multilabel',
+            # 'margin_multilabel',d
             'coreset_farthest',
             'nn_disagreement',
             'margin_multilabel',
