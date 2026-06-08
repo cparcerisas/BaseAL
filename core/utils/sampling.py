@@ -478,7 +478,7 @@ class SamplingStrategy:
         This is the multilabel analogue of:
             skactiveml.pool.UncertaintySampling(method='margin_sampling')
         which cannot be used directly here because it requires a classifier object
-        to call predict_proba — unnecessary when predictions are already available.
+        to call predict_proba -- unnecessary when predictions are already available.
 
         scikit-activeml reference:
             https://scikit-activeml.github.io/latest/generated/skactiveml.pool.UncertaintySampling.html
@@ -532,7 +532,7 @@ class SamplingStrategy:
 
         # Build y: labeled samples get a dummy label (0), everything else (unlabeled
         # AND validation) gets MISSING_LABEL so only true labeled samples serve as anchors.
-        # CoreSet only uses y to distinguish labeled from unlabeled — label values are ignored.
+        # CoreSet only uses y to distinguish labeled from unlabeled -- label values are ignored.
         y = np.full(n_total, MISSING_LABEL, dtype=float)
         y[self.labeled_indices] = 0
 
@@ -546,7 +546,7 @@ class SamplingStrategy:
             return_utilities=True,
         )
 
-        # utilities[0] = initial min-distance-to-labeled for every candidate — use for
+        # utilities[0] = initial min-distance-to-labeled for every candidate -- use for
         # visualisation / relative ranking of non-selected samples.
         util_scores = utilities[0][self.unlabeled_indices]
         utility = self._normalize(np.clip(util_scores, 0, None)) * 0.99
@@ -609,7 +609,7 @@ class SamplingStrategy:
         )
 
         # utilities[0] = typicality scores; -inf means the cluster is already covered by a
-        # labeled sample so the point should not be selected — map to 0 for display.
+        # labeled sample so the point should not be selected -- map to 0 for display.
         util_scores = utilities[0][self.unlabeled_indices]
         util_scores = np.where(np.isfinite(util_scores), util_scores, 0.0)
         utility = self._normalize(util_scores) * 0.99
@@ -624,3 +624,121 @@ class SamplingStrategy:
 
         logger.info(f"sklearn_typiclust - typicality min: {util_scores.min():.4f}, max: {util_scores.max():.4f}")
         return utility.astype(np.float32)
+
+
+class WarmupStrategy:
+    """
+    Warmup sampling strategies for pre-training initialisation.
+
+    Warmup selects an initial labeled set before any model training, so methods
+    only have access to raw embeddings -- no model predictions are available yet.
+    """
+
+    def __init__(self, method: str = "density", n_samples: int = 0, random_state: Optional[int] = None):
+        """
+        Args:
+            method: Warmup method ('density', 'random', 'custom')
+            n_samples: Number of samples to select
+            random_state: Optional random seed for reproducibility
+        """
+        self.method = method
+        self.n_samples = n_samples
+        self.rng = np.random.default_rng(random_state)
+
+        available_methods = ['density', 'random', 'custom']
+        if method not in available_methods:
+            raise ValueError(
+                f"Unknown warmup strategy: '{method}'. "
+                f"Available: {available_methods}"
+            )
+
+        self._method_map = {
+            'density': self._density,
+            'random': self._random,
+            'custom': self._custom,
+        }
+
+        # Set by select() before calling method implementations
+        self.candidate_indices: Optional[np.ndarray] = None
+        self.embeddings: Optional[np.ndarray] = None
+
+        logger.info(f"Initialized WarmupStrategy with method='{method}' and n_samples={n_samples}")
+
+    def select(self, candidate_indices: np.ndarray, embeddings: np.ndarray) -> List[int]:
+        """
+        Select warmup samples from the candidate pool.
+
+        Args:
+            candidate_indices: Sorted array of global sample indices (all non-validation samples)
+            embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+
+        Returns:
+            List of selected global indices (length <= n_samples)
+        """
+        n = min(self.n_samples, len(candidate_indices))
+        if n <= 0:
+            return []
+
+        self.candidate_indices = candidate_indices
+        self.embeddings = embeddings
+
+        utility = np.asarray(self._method_map[self.method](), dtype=np.float32)
+        top_local = np.argsort(utility)[-n:]
+        selected = candidate_indices[top_local].tolist()
+
+        logger.info(f"WarmupStrategy '{self.method}' selected {len(selected)} samples")
+        return selected
+
+    def _density(self) -> np.ndarray:
+        """
+        High-density warmup: selects samples surrounded by many neighbours.
+
+        Returns:
+            utility: KNN-density scores for each candidate
+        """
+        k = min(20, len(self.candidate_indices) - 1)
+        return densityEstimation(
+            embeddings=self.embeddings[self.candidate_indices],
+            method='knn',
+            k=k,
+            beta=1
+        )
+
+    def _random(self) -> np.ndarray:
+        """
+        Random warmup: uniform random utility scores.
+
+        Returns:
+            utility: Random scores for each candidate
+        """
+        return self.rng.random(len(self.candidate_indices)).astype(np.float32)
+
+    def _custom(self) -> np.ndarray:
+        """
+        Custom warmup strategy template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM WARMUP:
+        =============================================
+
+        1. This method computes utility scores for all candidate samples.
+
+        2. Scores should be in [0, 1] where:
+           - 1.0 = highest priority for initial annotation
+           - 0.0 = lowest priority
+
+        3. Available instance attributes (set by select()):
+           - self.candidate_indices: sorted array of global indices for all
+                                     non-validation samples
+           - self.embeddings:        full embedding array (n_total x embedding_dim);
+                                     access candidate embeddings via
+                                     self.embeddings[self.candidate_indices]
+
+        Note: No model predictions exist at warmup time -- only raw embeddings
+        are available.
+
+        Returns:
+            utility: Array of utility scores for candidates, shape (n_candidates,)
+        """
+        # TODO: Implement your custom warmup logic here
+        logger.warning("Custom warmup not implemented, falling back to density sampling")
+        return self._density()

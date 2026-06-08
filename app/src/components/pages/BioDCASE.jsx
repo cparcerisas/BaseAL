@@ -23,7 +23,7 @@ const teamMembers = [
   {
     id: 2,
     name: 'Lukas Rauch',
-    affiliation: 'PhD Candidate, Kassel University, Germany',
+    affiliation: 'Researcher, Earth Species Project',
     description: '',
     googleScholar: 'https://scholar.google.com/citations?hl=en&user=bB2A6e0AAAAJ&view_op=list_works&sortby=pubdate',
     // website: 'https://example.com/',

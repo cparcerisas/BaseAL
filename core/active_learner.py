@@ -23,7 +23,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import f1_score, average_precision_score
 
 # Initialize sampling strategy
-from .utils.sampling import SamplingStrategy
+from .utils.sampling import SamplingStrategy, WarmupStrategy
 
 # Suppress numba warnings and debug output
 warnings.filterwarnings('ignore', module='numba')
@@ -383,6 +383,9 @@ class ActiveLearner:
         sampling_strategy: str = "random",
         n_samples_per_iteration: int = 5,
         pretrain_samples: Optional[int] = None,
+        warmup_strategy: str = "density",
+        warmup_epochs: int = 10,
+        warmup_batch_size: int = 32,
         dropout_rate: float = 0.0,
         mc_dropout_passes: int = 1,
         verbose: bool = True,
@@ -393,7 +396,7 @@ class ActiveLearner:
 
         Args:
             embeddings_dir: Path to embeddings directory
-            annotations_path: Path to annotations CSV (labels.csv) — used internally
+            annotations_path: Path to annotations CSV (labels.csv) -- used internally
                               for training. Must contain a 'filename' and 'label' column,
                               and optionally a 'validation' column.
             model_name: Name of the model (e.g., 'birdnet')
@@ -506,6 +509,10 @@ class ActiveLearner:
 
         self.sampling_strategy = SamplingStrategy(method=sampling_strategy, n_samples=n_samples_per_iteration)
         logger.info(f"Initialized '{sampling_strategy}' sampling strategy with n_samples={n_samples_per_iteration}")
+        self.warmup_strategy = WarmupStrategy(method=warmup_strategy, n_samples=self.pretrain_samples)
+        logger.info(f"Initialized '{warmup_strategy}' warmup strategy with n_samples={self.pretrain_samples}")
+        self.warmup_epochs = warmup_epochs
+        self.warmup_batch_size = warmup_batch_size
 
         # Active learning state (validation indices are excluded from both pools)
         self.labeled_indices = set()
@@ -516,13 +523,7 @@ class ActiveLearner:
         self._pending_sampling_time: float = 0.0
         self._pending_annotation_cost: int = 0
 
-        # Pre-training warm-up: select high-density samples if specified
-        if pretrain_samples is not None and pretrain_samples > 0:
-            self._pretrain_warmup(pretrain_samples)
-            logger.info(f"Pre-training warm-up: selected {len(self.labeled_indices)} high-density samples")
-
         # Per-sample uncertainties (updated after each sampling step)
-        # Initialize with zeros for all samples
         self.uncertainties = np.zeros(len(self.embeddings))
 
         # Dimensionality reduction (fitted once and reused)
@@ -531,6 +532,11 @@ class ActiveLearner:
 
         # Batch size for full-dataset inference (predictions / evaluation)
         self.inference_batch_size = 4096
+
+        # Pre-training warm-up: select high-density samples if specified
+        if pretrain_samples is not None and pretrain_samples > 0:
+            self._pretrain_warmup(pretrain_samples)
+            logger.info(f"Pre-training warm-up: selected {len(self.labeled_indices)} high-density samples")
 
         logger.info(f"Initialised ActiveLearner with {len(self.embeddings)} samples and {num_classes} classes")
 
@@ -594,7 +600,7 @@ class ActiveLearner:
 
         n_missing = (~exists_mask).sum()
         if n_missing > 0:
-            logger.warning(f"{n_missing} annotation rows have no matching embedding file — skipped")
+            logger.warning(f"{n_missing} annotation rows have no matching embedding file -- skipped")
 
         # Filter to matched rows only
         df_matched = df[exists_mask].reset_index(drop=True)
@@ -683,7 +689,7 @@ class ActiveLearner:
                         f"{len(annotations_df) - n_val} training/unlabeled samples")
         else:
             validation_mask = pd.Series(False, index=annotations_df.index)
-            logger.info("No validation column found — all samples treated as unlabeled")
+            logger.info("No validation column found -- all samples treated as unlabeled")
 
         logger.info(f"Annotations DataFrame shape: {annotations_df.shape}")
 
@@ -691,44 +697,38 @@ class ActiveLearner:
 
     def _pretrain_warmup(self, n_samples: int):
         """
-        Pre-training warm-up: select high-density samples for initial training
-
-        This method selects samples with lots of neighbors (high density) for
-        initial annotation and training, without requiring model predictions.
+        Pre-training warm-up: select initial samples, train on them, and record
+        a cycle-0 entry in training_history with real evaluation metrics.
 
         Args:
-            n_samples: Number of high-density samples to pre-select
+            n_samples: Number of samples to pre-select
         """
-        from .utils.sampling import densityEstimation # TODO: generalise to other warmup methods
-
-        # Candidate pool: all non-validation samples
         candidate_indices = np.array(sorted(set(range(len(self.embeddings))) - self.validation_indices))
-        n_samples = min(n_samples, len(candidate_indices))
 
-        logger.info(f"Computing density estimation for {len(candidate_indices)} candidate samples...")
+        logger.info(f"Running '{self.warmup_strategy.method}' warmup for {len(candidate_indices)} candidates...")
 
-        # Compute density using KNN method (samples with more neighbors = higher density)
-        # Using k=20 as a reasonable default for neighbor count
-        density_scores = densityEstimation(
-            embeddings=self.embeddings[candidate_indices],
-            method='knn',
-            k=min(20, len(candidate_indices) - 1),  # Ensure k < n_samples
-            beta=1
-        )
+        _t0 = time.perf_counter()
+        selected = self.warmup_strategy.select(candidate_indices, self.embeddings)
+        self._pending_sampling_time = time.perf_counter() - _t0
 
-        logger.info(f"Density scores - min: {density_scores.min():.4f}, max: {density_scores.max():.4f}, mean: {density_scores.mean():.4f}")
-
-        # Select samples with highest density and map back to global indices
-        top_local = np.argsort(density_scores)[-n_samples:]
-        top_density_indices = candidate_indices[top_local]
-
-        # Add these samples to labeled set
-        self.labeled_indices = set(top_density_indices.tolist())
-
-        # Remove from unlabeled set (validation indices already excluded)
+        self.labeled_indices = set(selected)
         self.unlabeled_indices = set(candidate_indices.tolist()) - self.labeled_indices
 
-        logger.info(f"Pre-training warm-up complete: selected {len(self.labeled_indices)} high-density samples")
+        # Credit annotation cost so train_step records it in the history entry
+        if self.is_multilabel:
+            self._pending_annotation_cost = int(self.labels[list(self.labeled_indices)].sum())
+        else:
+            self._pending_annotation_cost = len(self.labeled_indices)
+
+        # Train on warmup samples and record real metrics as cycle 0
+        self.train_step(epochs=self.warmup_epochs, batch_size=self.warmup_batch_size)
+
+        # Mark the appended entry as warmup
+        if self.training_history:
+            self.training_history[-1]['warmup'] = True
+
+        mAP = self.training_history[-1]['mAP'] if self.training_history else 0.0
+        logger.info(f"Pre-training warm-up complete: {len(self.labeled_indices)} samples, mAP={mAP:.4f}")
         logger.info(f"Remaining unlabeled samples: {len(self.unlabeled_indices)}")
 
     def _predict_all(self) -> np.ndarray:
@@ -854,7 +854,7 @@ class ActiveLearner:
         self.unlabeled_indices -= moved
         self.labeled_indices |= moved
 
-        # Annotation cost = Σ events per selected sample.
+        # Annotation cost = sum events per selected sample.
         # For multilabel: events(i) = number of positive labels.
         # For single-label: every sample has exactly 1 event.
         if self.is_multilabel:
@@ -1002,7 +1002,7 @@ class ActiveLearner:
 
                 total_loss = epoch_loss / train_length
 
-            # Evaluation — use validation set if available, else all samples
+            # Evaluation -- use validation set if available, else all samples
             probabilities = self._predict_all()
             num_classes = len(self.label_to_idx)
 
@@ -1146,10 +1146,10 @@ class ActiveLearner:
             'aulc_f1_score': aulc_f1,
         })
 
-        logger.info(f"Training step complete: Loss={metrics['loss']:.4f}±{metrics['loss_sd']:.4f}, "
-                   f"Acc={metrics['accuracy']:.4f}±{metrics['accuracy_sd']:.4f}, "
-                   f"F1={metrics['f1_score']:.4f}±{metrics['f1_score_sd']:.4f}, "
-                   f"mAP={metrics['mAP']:.4f}±{metrics['mAP_sd']:.4f}, "
+        logger.info(f"Training step complete: Loss={metrics['loss']:.4f}+-{metrics['loss_sd']:.4f}, "
+                   f"Acc={metrics['accuracy']:.4f}+-{metrics['accuracy_sd']:.4f}, "
+                   f"F1={metrics['f1_score']:.4f}+-{metrics['f1_score_sd']:.4f}, "
+                   f"mAP={metrics['mAP']:.4f}+-{metrics['mAP_sd']:.4f}, "
                    f"AULC(mAP)={aulc_mAP:.4f}")
 
         return metrics
@@ -1208,12 +1208,18 @@ class ActiveLearner:
 
         model_parameters = int(sum(p.numel() for p in self.model.parameters()))
 
-        # Build per-cycle learning curve (stripped)
+        # Build per-cycle learning curve (warmup as cycle 0, AL cycles numbered from 1)
         learning_curve = []
-        for i, entry in enumerate(self.training_history):
-            row = {'cycle': i + 1}
+        cycle_counter = 0
+        for entry in self.training_history:
+            is_warmup = entry.get('warmup', False)
+            if is_warmup:
+                row = {'cycle': 0, 'warmup': True}
+            else:
+                cycle_counter += 1
+                row = {'cycle': cycle_counter}
             for k, v in entry.items():
-                if k not in _STRIP:
+                if k not in _STRIP and k != 'warmup':
                     row[k] = round(v, 6) if isinstance(v, float) else v
             learning_curve.append(row)
 
@@ -1225,7 +1231,7 @@ class ActiveLearner:
         last = self.training_history[-1] if self.training_history else {}
         epochs_per_cycle = last.get('epochs', None)
 
-        # Baseline config (fixed): 50 samples/cycle × 10 cycles = 500 samples, 10 epochs/cycle.
+        # Baseline config (fixed): 50 samples/cycle x 10 cycles = 500 samples, 10 epochs/cycle.
         _BASELINE_EPOCHS  = 10
         _BASELINE_CYCLES  = 10
         baseline_n_cycles = _BASELINE_CYCLES
@@ -1248,6 +1254,7 @@ class ActiveLearner:
                 'model_parameters': model_parameters,
                 'repeats': self.repeats,
                 'pretrain_samples': self.pretrain_samples,
+                'warmup_strategy': self.warmup_strategy.method,
             },
             'learning_curve': learning_curve,
             'supplementary': {
@@ -1323,7 +1330,7 @@ class ActiveLearner:
 
     def _project_spherical(self, embeddings_3d: np.ndarray) -> np.ndarray:
         """
-        Project points onto unit sphere (S²)
+        Project points onto unit sphere (S^2)
 
         Args:
             embeddings_3d: Input 3D coordinates
@@ -1351,7 +1358,7 @@ class ActiveLearner:
         Returns:
             3D coordinates on torus surface
         """
-        # Normalize input to [-π, π] range for angles
+        # Normalize input to [-pi, pi] range for angles
         x_norm = embeddings_3d[:, 0]
         y_norm = embeddings_3d[:, 1]
         z_norm = embeddings_3d[:, 2]
@@ -1374,9 +1381,9 @@ class ActiveLearner:
 
     def _project_hyperbolic(self, embeddings_3d: np.ndarray, scale: float = 0.9) -> np.ndarray:
         """
-        Project points into Poincaré ball model of hyperbolic space
+        Project points into Poincare ball model of hyperbolic space
 
-        The Poincaré ball is the unit ball with hyperbolic metric.
+        The Poincare ball is the unit ball with hyperbolic metric.
         Points are mapped so they lie within the ball, with distance from
         origin representing hyperbolic distance.
 
@@ -1385,7 +1392,7 @@ class ActiveLearner:
             scale: Scaling factor to control how close points get to boundary (< 1)
 
         Returns:
-            3D coordinates in Poincaré ball (within unit sphere)
+            3D coordinates in Poincare ball (within unit sphere)
         """
         # Normalize to get direction
         norms = np.linalg.norm(embeddings_3d, axis=1, keepdims=True)

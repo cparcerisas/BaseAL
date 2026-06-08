@@ -292,6 +292,8 @@ def add_experiment_to_manager(
     name: str,
     model_name: str = "birdnet",
     sampling_strategy: str = "random",
+    warmup_strategy: str = "density",
+    pretrain_samples: Optional[int] = None,
     learning_rate: float = 0.0001,
     hidden_dim: Optional[int] = None,
     device: str = "cpu"
@@ -321,6 +323,8 @@ def add_experiment_to_manager(
             'annotations_path': str(BASE_DIR / "ESC10_BASEAL" / "labels.csv"),
             'model_name': model_name,
             'sampling_strategy': sampling_strategy,
+            'warmup_strategy': warmup_strategy,
+            'pretrain_samples': pretrain_samples,
             'learning_rate': learning_rate,
             'hidden_dim': hidden_dim,
             'device': device
@@ -489,7 +493,12 @@ def select_experiment(experiment_index: int):
 # ==================== Active Learning Endpoints ====================
 
 @app.post("/api/active-learning/initialize")
-def initialize_active_learner(model_name: str = "birdnet", dataset_name: str = "esc50"):
+def initialize_active_learner(
+    model_name: str = "birdnet",
+    dataset_name: str = "esc50",
+    warmup_strategy: str = "density",
+    pretrain_samples: Optional[int] = None
+):
     """
     Initialize the active learning pipeline
 
@@ -526,7 +535,9 @@ def initialize_active_learner(model_name: str = "birdnet", dataset_name: str = "
             dataset_name=dataset_name,
             hidden_dim=1024,
             learning_rate=0.001,
-            device="cpu"
+            device="cpu",
+            warmup_strategy=warmup_strategy,
+            pretrain_samples=pretrain_samples,
         )
 
         return {
