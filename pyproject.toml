@@ -12,7 +12,7 @@ dependencies = [
     "pandas>=2.2.3",
     "librosa>=0.10.0",
     "matplotlib>=3.7.0",
-    "fastapi==0.104.1",
+    "fastapi (==0.135.1)",
     "uvicorn[standard]==0.24.0",
     "numpy>=1.24.0,<2.0",
     "python-multipart==0.0.6",
@@ -22,6 +22,7 @@ dependencies = [
     "pyyaml",
     "soundfile",
     "jupyter>=1.1.1",
+    "renumics-spotlight (>=1.8.0,<2.0.0)",
 ]
 
 

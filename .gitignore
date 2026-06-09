@@ -25,3 +25,5 @@ scripts
 /.vscode/
 /.pyenv/
 /dataset-generator/
+
+poetry.lock
