@@ -22,6 +22,9 @@ def densityEstimation(embeddings: Optional[np.ndarray] = None, method='cosine', 
         knn = NearestNeighbors(n_neighbors=k).fit(embeddings)
         distance, _ = knn.kneighbors(embeddings)
         similarity = distance.T
+    elif method == 'valentins_method': 
+        # Get the best samples and return per each sample from 0 to 1 how interesting they are (can be directly 0s and 1s I would say)
+        print('hey')
     else:
         raise Exception("Unknown similarity estimation method, ")
 
@@ -90,7 +93,8 @@ class SamplingStrategy:
             'quantiles',
             'quantiles_imbalanced',
             'spatiotemporal_diversity',
-            'best'
+            'best', 
+            'higher_quantiles'
         ]
 
         if method not in available_methods:
@@ -114,7 +118,8 @@ class SamplingStrategy:
             'quantiles': self._quantiles,
             'quantiles_imbalanced': self._quantiles_imbalanced,
             'spatiotemporal_diversity': self._spatiotemporal_diversity,
-            'best': self._best
+            'best': self._best,
+            'higher_quantiles': self._higher_quantiles
         }
 
         # Data attributes (see selct)
@@ -304,19 +309,18 @@ class SamplingStrategy:
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
         samples['utility']= np.zeros(len(samples))
 
+        quantiles_columns = []
         for c in np.arange(n_classes): 
-            samples['quantile'] = pd.qcut(samples[c], quantiles, duplicates='drop')
-            for _, quantile in samples.groupby('quantile'): 
-                randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
-                samples.loc[randomly_selected_samples.index, 'utility'] = 1
+            samples[f'quantile_{c}'] = pd.qcut(samples[c], quantiles, duplicates='drop', labels=False)
+            # for _, quantile in samples.groupby(f'quantile_{c}'): 
+            #     randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
+            #     samples.loc[randomly_selected_samples.index, 'utility'] = 1
+            quantiles_columns.append(f'quantile_{c}')
         
-        # This might not be necessary
-        if samples.utility.sum() > self.n_samples: 
-            print('Removing some of the selected samples randomly...')
-            discarded_n_samples = samples.utility.sum() - self.n_samples
-            selected_samples = samples.loc[samples.utility == 1]
-            to_discard = selected_samples.sample(int(discarded_n_samples))
-            samples.loc[to_discard.index, 'utility'] = 0
+        high_quality_samples = ((samples[quantiles_columns] == 3).sum(axis=1) == 1) & ((samples[quantiles_columns] == 0).sum(axis=1) == 3)
+        #samples['utility'] = samples[quantiles_columns].sum(axis=1) / samples[quantiles_columns].sum(axis=1).max()
+        selection = high_quality_samples.sample(self.n_samples)
+        samples.loc[selection.index, 'utility'] = 1
         return samples['utility'].values
     
     def _spatiotemporal_diversity(self) -> np.ndarray:
@@ -381,7 +385,7 @@ class SamplingStrategy:
         print('imbalanced quantiles')
         return self._random()
     
-    def _best(self) -> np.ndarray:
+    def _higher_quantiles(self) -> np.ndarray:
         """
         Custom sampling template.
 
@@ -409,6 +413,53 @@ class SamplingStrategy:
         """
         # define the quantiles
         quantiles = [0, 0.75, 0.875, 1]
+        n_classes = self.predictions.shape[1]
+        n_per_class = int(self.n_samples / n_classes)
+        n_per_quantile = max(int(n_per_class / (len(quantiles))), 1)
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples['utility']= np.zeros(len(samples))
+
+        for c in np.arange(n_classes): 
+            samples['quantile'] = pd.qcut(samples[c], quantiles, duplicates='drop')
+            idx = 0
+            for _, quantile in samples.groupby('quantile'): 
+                if idx > 0:
+                    randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
+                    samples.loc[randomly_selected_samples.index, 'utility'] = 1
+                idx += 1
+        
+        return samples['utility'].values
+
+
+    def _best(self) -> np.ndarray:
+        """
+        Custom sampling template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+        # define the quantiles
+        quantiles = [0, 0.875, 1]
         n_classes = self.predictions.shape[1]
         n_per_class = int(self.n_samples / n_classes)
         n_per_quantile = max(int(n_per_class / (len(quantiles))), 1)
