@@ -387,6 +387,7 @@ class ActiveLearner:
         mc_dropout_passes: int = 1,
         verbose: bool = True,
         metadata_path: Optional[Path] = None,
+        warmup_method: str = "density"
     ):
         """
         Initialize active learner
@@ -413,6 +414,7 @@ class ActiveLearner:
                            annotations_path) is passed to sampling strategies instead of
                            the labels CSV, preventing participants from accessing
                            ground-truth labels for unlabeled samples.
+            warmup_method: Method to use for warm-up training (e.g., 'density', 'uniform')
         """
         if not verbose:
             logger.setLevel(logging.WARNING)
@@ -426,7 +428,7 @@ class ActiveLearner:
         self.device = device
         self.repeats = repeats # TODO: potentially adjust for MC
         self.pretrain_samples = pretrain_samples or 0
-
+        self.warmup_method = warmup_method
         # Model dropout for MC
         self.dropout_rate = dropout_rate
         self.mc_dropout_passes = mc_dropout_passes
@@ -518,7 +520,7 @@ class ActiveLearner:
 
         # Pre-training warm-up: select high-density samples if specified
         if pretrain_samples is not None and pretrain_samples > 0:
-            self._pretrain_warmup(pretrain_samples)
+            self._pretrain_warmup(pretrain_samples, method=warmup_method)
             logger.info(f"Pre-training warm-up: selected {len(self.labeled_indices)} high-density samples")
 
         # Per-sample uncertainties (updated after each sampling step)
@@ -689,7 +691,7 @@ class ActiveLearner:
 
         return embeddings, labels, label_to_idx, idx_to_label, annotations_df, validation_mask
 
-    def _pretrain_warmup(self, n_samples: int):
+    def _pretrain_warmup(self, n_samples: int, method = "density"):
         """
         Pre-training warm-up: select high-density samples for initial training
 
@@ -698,8 +700,9 @@ class ActiveLearner:
 
         Args:
             n_samples: Number of high-density samples to pre-select
+            method: Method to use for warm-up (default is "density") other option is "uniform_embedding" for uniform sampling in embedding space
         """
-        from .utils.sampling import densityEstimation # TODO: generalise to other warmup methods
+        from .utils.sampling import densityEstimation, uniformEmbeddingSampling # TODO: generalise to other warmup methods
 
         # Candidate pool: all non-validation samples
         candidate_indices = np.array(sorted(set(range(len(self.embeddings))) - self.validation_indices))
@@ -709,27 +712,43 @@ class ActiveLearner:
 
         # Compute density using KNN method (samples with more neighbors = higher density)
         # Using k=20 as a reasonable default for neighbor count
-        density_scores = densityEstimation(
-            embeddings=self.embeddings[candidate_indices],
-            method='knn',
-            k=min(20, len(candidate_indices) - 1),  # Ensure k < n_samples
-            beta=1
-        )
+        if method == "density":
 
-        logger.info(f"Density scores - min: {density_scores.min():.4f}, max: {density_scores.max():.4f}, mean: {density_scores.mean():.4f}")
+            density_scores = densityEstimation(
+                embeddings=self.embeddings[candidate_indices],
+                method='knn',
+                k=min(20, len(candidate_indices) - 1),  # Ensure k < n_samples
+                beta=1
+            )
 
-        # Select samples with highest density and map back to global indices
-        top_local = np.argsort(density_scores)[-n_samples:]
-        top_density_indices = candidate_indices[top_local]
+            logger.info(f"Density scores - min: {density_scores.min():.4f}, max: {density_scores.max():.4f}, mean: {density_scores.mean():.4f}")
 
-        # Add these samples to labeled set
-        self.labeled_indices = set(top_density_indices.tolist())
+            # Select samples with highest density and map back to global indices
+            top_local = np.argsort(density_scores)[-n_samples:]
+            top_density_indices = candidate_indices[top_local]
 
-        # Remove from unlabeled set (validation indices already excluded)
-        self.unlabeled_indices = set(candidate_indices.tolist()) - self.labeled_indices
+            # Add these samples to labeled set
+            self.labeled_indices = set(top_density_indices.tolist())
 
-        logger.info(f"Pre-training warm-up complete: selected {len(self.labeled_indices)} high-density samples")
-        logger.info(f"Remaining unlabeled samples: {len(self.unlabeled_indices)}")
+            # Remove from unlabeled set (validation indices already excluded)
+            self.unlabeled_indices = set(candidate_indices.tolist()) - self.labeled_indices
+
+            logger.info(f"Pre-training warm-up complete: selected {len(self.labeled_indices)} high-density samples")
+            logger.info(f"Remaining unlabeled samples: {len(self.unlabeled_indices)}")
+        elif method == "uniform_embedding":
+            selected_indices = uniformEmbeddingSampling(
+                embeddings=self.embeddings[candidate_indices],
+                n_samples=n_samples
+            )
+            selected_indices = selected_indices==1.0  # Convert to boolean mask if returned as binary indicators
+            selected_global_indices = candidate_indices[selected_indices]
+
+            self.labeled_indices = set(selected_global_indices.tolist())
+            self.unlabeled_indices = set(candidate_indices.tolist()) - self.labeled_indices
+
+            logger.info(f"Pre-training warm-up complete: selected {len(self.labeled_indices)} uniformly distributed samples")
+            logger.info(f"Remaining unlabeled samples: {len(self.unlabeled_indices)}")
+    
 
     def _predict_all(self) -> np.ndarray:
         """
