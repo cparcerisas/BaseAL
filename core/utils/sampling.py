@@ -22,14 +22,54 @@ def densityEstimation(embeddings: Optional[np.ndarray] = None, method='cosine', 
         knn = NearestNeighbors(n_neighbors=k).fit(embeddings)
         distance, _ = knn.kneighbors(embeddings)
         similarity = distance.T
-    elif method == 'valentins_method': 
-        # Get the best samples and return per each sample from 0 to 1 how interesting they are (can be directly 0s and 1s I would say)
-        print('hey')
     else:
         raise Exception("Unknown similarity estimation method, ")
 
     density = np.power(np.sum(similarity, axis=0) / np.sum(similarity, axis=0).max(), beta)
     return density
+
+
+def KMeansEstimation(embeddings: Optional[np.ndarray] = None, num_classes: int = None, n_samples: int = 20, random_state: Optional[int] = None)-> np.ndarray:
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import normalize
+
+    use_umap = False 
+
+    # Normalise embeddings before clustering
+    embeddings_norm = normalize(embeddings, norm='l2')
+
+    if use_umap:
+        import umap
+        reducer = umap.UMAP(n_components=2, random_state=random_state)
+        embeddings_for_clustering = reducer.fit_transform(embeddings_norm)
+        print("UMAP embeddings shape computed")
+    else:
+        embeddings_for_clustering = embeddings_norm
+
+    kmeans = KMeans(n_clusters=n_samples, random_state=random_state, n_init='auto')
+    kmeans.fit(embeddings_for_clustering)
+
+    # For each centroid, pick the closest actual sample
+    centroids = kmeans.cluster_centers_
+    selected_local = []
+    for centroid in centroids:
+        dists = np.linalg.norm(embeddings_for_clustering - centroid, axis=1)
+        closest = np.argmin(dists)
+        selected_local.append(closest)
+
+    # Deduplicate (two centroids may map to the same sample)
+    selected_local = list(set(selected_local))
+
+    # # Plot check for sanity
+    # import matplotlib.pyplot as plt
+    # reducer = umap.UMAP(n_components=2, random_state=42)
+    # umap_embeddings = reducer.fit_transform(self.embeddings)
+    # plt.scatter(umap_embeddings[:, 0], umap_embeddings[:, 1])
+    # # plot the top_indices samples with a different color
+    # plt.scatter(umap_embeddings[top_indices, 0], umap_embeddings[top_indices, 1], c='red')
+    # plt.show()
+    return selected_local
+
 
 def uniformEmbeddingSampling(embeddings: Optional[np.ndarray] = None, n_samples: int = 20, random_state: Optional[int] = None)-> np.ndarray:
     '''
@@ -1090,9 +1130,10 @@ class WarmupStrategy:
         Returns:
             utility: Array of utility scores for candidates, shape (n_candidates,)
         """
-        # TODO: Implement your custom warmup logic here
-        logger.warning("Custom warmup not implemented, falling back to density sampling")
-        return self._density()
+        return KMeansEstimation(embeddings=self.embeddings[self.candidate_indices], 
+                                num_classes=self.n_
+                                n_samples=self.n_samples, 
+                                random_state=self.rng)
     
     def _eigenvalues(self) -> np.ndarray:
         """
