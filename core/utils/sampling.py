@@ -230,10 +230,9 @@ class SamplingStrategy:
             'sklearn_coreset',
             'sklearn_typiclust',   
             'quantiles',
-            'quantiles_imbalanced',
-            'spatiotemporal_diversity',
-            'best', 
-            'higher_quantiles'
+            'best_single',
+            'best_multiclass',
+            'most_confident_classes'
         ]
 
         if method not in available_methods:
@@ -255,10 +254,9 @@ class SamplingStrategy:
             'sklearn_coreset': self._sklearn_coreset,
             'sklearn_typiclust': self._sklearn_typiclust,
             'quantiles': self._quantiles,
-            'quantiles_imbalanced': self._quantiles_imbalanced,
-            'spatiotemporal_diversity': self._spatiotemporal_diversity,
-            'best': self._best,
-            'higher_quantiles': self._higher_quantiles
+            'best_single': self._best_single, 
+            'best_multiclass': self._best_multiclass, 
+            'most_confident_classes': self._most_confident_classes
         }
 
         # Data attributes (see selct)
@@ -269,6 +267,8 @@ class SamplingStrategy:
         self.metadata = None
         self.labeled_indices = None
         self.labels = None
+
+        self.quantiles = [0, 0.25, 0.85, 1]
 
         logger.info(f"Initialized SamplingStrategy with method='{method}' and n_samples={n_samples}")
 
@@ -409,11 +409,52 @@ class SamplingStrategy:
         # TODO: Implement your custom sampling logic here
         # For now, default to random sampling
         # logger.warning("Custom sampling not implemented, falling back to random sampling")
-        print('here I am')
         return self._random()
     
 
     def _quantiles(self) -> np.ndarray:
+        """
+        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+        # define the quantiles
+        n_classes = self.predictions.shape[1]
+        n_per_class = int(self.n_samples / n_classes)
+        n_per_quantile = max(int(n_per_class / (len(self.quantiles) + 1)), 1)
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples['utility']= np.zeros(len(samples))
+
+        for c in np.arange(n_classes): 
+            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
+            for _, quantile in samples.groupby(f'quantile_{c}'): 
+                randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
+                samples.loc[randomly_selected_samples.index, 'utility'] = 1
+
+        return samples['utility'].values
+
+    def _best_single(self) -> np.ndarray:
         """
         Custom sampling template.
 
@@ -439,139 +480,54 @@ class SamplingStrategy:
         Returns:
             utility: Array of utility scores for samples [0, 1]
         """
+        """
+        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
         # define the quantiles
-        quantiles = [0, 0.5, 0.75, 0.875, 1]
         n_classes = self.predictions.shape[1]
         n_per_class = int(self.n_samples / n_classes)
-        n_per_quantile = max(int(n_per_class / (len(quantiles) + 1)), 1)
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
         samples['utility']= np.zeros(len(samples))
 
         quantiles_columns = []
         for c in np.arange(n_classes): 
-            samples[f'quantile_{c}'] = pd.qcut(samples[c], quantiles, duplicates='drop', labels=False)
-            # for _, quantile in samples.groupby(f'quantile_{c}'): 
-            #     randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
-            #     samples.loc[randomly_selected_samples.index, 'utility'] = 1
+            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
             quantiles_columns.append(f'quantile_{c}')
         
-        high_quality_samples = ((samples[quantiles_columns] == 3).sum(axis=1) == 1) & ((samples[quantiles_columns] == 0).sum(axis=1) == 3)
-        #samples['utility'] = samples[quantiles_columns].sum(axis=1) / samples[quantiles_columns].sum(axis=1).max()
-        selection = high_quality_samples.sample(self.n_samples)
-        samples.loc[selection.index, 'utility'] = 1
-        return samples['utility'].values
-    
-    def _spatiotemporal_diversity(self) -> np.ndarray:
-        """
-        Custom sampling template.
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
-        """
-
-        print('spatiotemporal')
-        return self._random()
-
-    def _quantiles_imbalanced(self) -> np.ndarray:
-        """
-        Custom sampling template.
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
-        """
-        # TODO: Implement your custom sampling logic here
-        # For now, default to random sampling
-        # logger.warning("Custom sampling not implemented, falling back to random sampling")
-        print('imbalanced quantiles')
-        return self._random()
-    
-    def _higher_quantiles(self) -> np.ndarray:
-        """
-        Custom sampling template.
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
-        """
-        # define the quantiles
-        quantiles = [0, 0.75, 0.875, 1]
-        n_classes = self.predictions.shape[1]
-        n_per_class = int(self.n_samples / n_classes)
-        n_per_quantile = max(int(n_per_class / (len(quantiles))), 1)
-        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
-        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
-        samples['utility']= np.zeros(len(samples))
-
+        high_quantile = len(self.quantiles) - 1
+        samples['utility'] = 0
         for c in np.arange(n_classes): 
-            samples['quantile'] = pd.qcut(samples[c], quantiles, duplicates='drop')
-            idx = 0
-            for _, quantile in samples.groupby('quantile'): 
-                if idx > 0:
-                    randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
-                    samples.loc[randomly_selected_samples.index, 'utility'] = 1
-                idx += 1
+            # Samples which are in quantile max for one class and in quantile 0 for the others
+            high_quality_class_samples = (samples[f'quantile_{c}'] == high_quantile ) & ((samples[quantiles_columns]).sum(axis=1) == 2)
+            selection = samples[high_quality_class_samples].sample(min(n_per_class,high_quality_class_samples.sum()))
+            samples.loc[selection.index, 'utility'] = 1
         
         return samples['utility'].values
 
-
-    def _best(self) -> np.ndarray:
+    def _best_multiclass(self) -> np.ndarray:
         """
         Custom sampling template.
 
@@ -597,23 +553,117 @@ class SamplingStrategy:
         Returns:
             utility: Array of utility scores for samples [0, 1]
         """
+        """
+        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
         # define the quantiles
-        quantiles = [0, 0.875, 1]
         n_classes = self.predictions.shape[1]
-        n_per_class = int(self.n_samples / n_classes)
-        n_per_quantile = max(int(n_per_class / (len(quantiles))), 1)
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
         samples['utility']= np.zeros(len(samples))
 
+        quantiles_columns = []
         for c in np.arange(n_classes): 
-            samples['quantile'] = pd.qcut(samples[c], quantiles, duplicates='drop')
-            idx = 0
-            for _, quantile in samples.groupby('quantile'): 
-                if idx > 0:
-                    randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
-                    samples.loc[randomly_selected_samples.index, 'utility'] = 1
-                idx += 1
+            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
+            quantiles_columns.append(f'quantile_{c}')
+        
+        high_quantile = len(self.quantiles) - 1
+        samples['utility'] = (samples[quantiles_columns].isin([0, high_quantile])).sum(axis=1)
+        samples['utility'] = samples['utility'] / samples['utility'].max()
+        
+        return samples['utility'].values
+
+    def _most_confident_classes(self) -> np.ndarray:
+        """
+        Custom sampling template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+        """
+        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
+        ===============================================
+
+        1. This method computes utility scores for all unlabeled samples.
+
+        2. The utility scores should be normalized to [0, 1] where:
+           - 1.0 = maximum utility (highest priority for annotation)
+           - 0.0 = lowest utility (lowest priority for annotation)
+
+        3. Available instance attributes (set by select() method):
+           - self.unlabeled_indices: List of indices in the unlabeled pool
+           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
+                              Contains probabilities for all classes
+           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
+                             The raw feature vectors before classification
+           - self.model: Reference to the trained model (if you need to extract features/gradients)
+           - self.metadata: DataFrame containing annotation data and metadata
+                              Can contain custom metadata fields for advanced sampling strategies
+
+        Returns:
+            utility: Array of utility scores for samples [0, 1]
+        """
+        # define the quantiles
+        n_classes = self.predictions.shape[1]
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples['utility']= np.zeros(len(samples))
+
+        quantiles_columns = []
+        for c in np.arange(n_classes): 
+            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
+            quantiles_columns.append(f'quantile_{c}')
+        
+        high_quantile = len(self.quantiles) - 1
+        samples['utility'] = (samples[quantiles_columns] == high_quantile).sum(axis=1)
+        samples['utility'] = samples['utility'] / samples['utility'].max()
+
+        # Alternatively, it could also be done with probabs directly 
+        utility = unlabeled_predictions.sum(axis=1)
+        utility = utility / utility.max()
         
         return samples['utility'].values
     
@@ -992,7 +1042,7 @@ class WarmupStrategy:
     only have access to raw embeddings -- no model predictions are available yet.
     """
 
-    def __init__(self, method: str = "density", n_samples: int = 0, random_state: Optional[int] = None):
+    def __init__(self, method: str = "density", n_samples: int = 0, num_classes: int = None, random_state: Optional[int] = None):
         """
         Args:
             method: Warmup method ('density', 'random', 'custom')
@@ -1001,6 +1051,7 @@ class WarmupStrategy:
         """
         self.method = method
         self.n_samples = n_samples
+        self.num_classes = num_classes
         self.rng = np.random.default_rng(random_state)
 
         available_methods = ['density', 'random', 'custom']
@@ -1131,7 +1182,7 @@ class WarmupStrategy:
             utility: Array of utility scores for candidates, shape (n_candidates,)
         """
         return KMeansEstimation(embeddings=self.embeddings[self.candidate_indices], 
-                                num_classes=self.n_
+                                num_classes=self.n_classes,
                                 n_samples=self.n_samples, 
                                 random_state=self.rng)
     
@@ -1196,3 +1247,103 @@ class WarmupStrategy:
         return self._density()
 
 
+
+if __name__ ==  "__main__":
+
+    print("=" * 60)
+    print("SamplingStrategy - Unit Test on Dummy Data")
+    print("=" * 60)
+
+    # --- Dummy data setup ---
+    N_SAMPLES    = 20
+    N_TOTAL      = 200   # total samples in the pool
+    N_UNLABELED  = 160    # samples without labels
+    N_LABELED    = 40    # samples already labeled
+    N_CLASSES    = 8
+    EMBED_DIM    = 16
+    RANDOM_STATE = 42
+
+    rng = np.random.default_rng(RANDOM_STATE)
+
+    all_indices = list(range(N_TOTAL))
+    labeled_indices = all_indices[:N_LABELED]
+    unlabeled_indices = all_indices[N_LABELED:]
+
+    # Softmax-like predictions (rows sum to 1)
+    raw = rng.random((N_TOTAL, N_CLASSES))
+
+    # # Create a dummy prediction array with size N_TOTAL x N_CLASSES and values increasing by step from 0 to 1
+    # predictions = np.arange(0, 1, 1/N_TOTAL, dtype=np.float32)
+    # # Concatenate the predictions for each class
+    # predictions = np.tile(predictions, (N_CLASSES, 1)).T
+
+    # Create long-tail predictions using a Dirichlet distribution
+    # Low concentration (alpha < 1) produces sparse, peaked distributions
+    # mimicking a model that is often confident about one class
+    alpha = np.ones(N_CLASSES) * 0.4
+    raw_predictions = rng.dirichlet(alpha, size=N_TOTAL).astype(np.float32)
+    predictions = raw_predictions
+
+    embeddings = rng.standard_normal((N_TOTAL, EMBED_DIM)).astype(np.float32)
+    labels = rng.integers(0, N_CLASSES, size=N_TOTAL)
+
+    # Minimal metadata DataFrame
+    metadata = pd.DataFrame({
+        'sample_id': all_indices,
+        'split':     ['labeled'] * N_LABELED + ['unlabeled'] * N_UNLABELED,
+    })
+
+    # --- Methods to test ---
+    method_to_test = 'quantiles'
+    print(f"\n--- Testing method: '{method_to_test}' ---")
+
+    strategy = SamplingStrategy(method=method_to_test, n_samples=N_SAMPLES, random_state=RANDOM_STATE)
+
+    selected, utility = strategy.select(
+        unlabeled_indices=unlabeled_indices,
+        predictions=predictions,
+        embeddings=embeddings,
+        labeled_indices=labeled_indices,
+        labels=labels,
+        metadata=metadata,
+    )
+
+    print(f"Selected indices : {selected}")
+    print(f"Utility : {utility}")
+    print(f"Prediction selected samples: {predictions[selected]}")
+
+    print("\n" + "=" * 60)
+
+    # Plot the distribution of samples and selected samples
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+
+    class_names = [f"Class {i}" for i in range(N_CLASSES)]
+    fig, axes = plt.subplots(1, N_CLASSES, figsize=(4 * N_CLASSES, 4), sharey=True)
+
+    unlabeled_preds = predictions[unlabeled_indices]  # shape: (N_UNLABELED, N_CLASSES)
+    selected_preds  = predictions[selected]           # shape: (N_SAMPLES, N_CLASSES)
+
+    for i, ax in enumerate(axes):
+        data = unlabeled_preds[:, i]
+        kde  = gaussian_kde(data, bw_method='scott')
+        x    = np.linspace(data.min(), data.max(), 300)
+
+        ax.plot(x, kde(x), color='steelblue', linewidth=2, label='Unlabeled pool')
+        ax.fill_between(x, kde(x), alpha=0.15, color='steelblue')
+
+        # Selected samples as dots on the x-axis (rug) at y=0
+        sel_probs = selected_preds[:, i]
+        ax.scatter(sel_probs, np.zeros_like(sel_probs),
+                color='tomato', s=60, zorder=5,
+                marker='|', linewidths=2, label='Selected')
+
+        ax.set_title(class_names[i])
+        ax.set_xlabel("Predicted probability")
+        if i == 0:
+            ax.set_ylabel("Density")
+        ax.legend(fontsize=8)
+
+    fig.suptitle(f"Prediction density — method: '{method_to_test}'", fontsize=13)
+    plt.tight_layout()
+    plt.show()

@@ -511,7 +511,7 @@ class ActiveLearner:
 
         self.sampling_strategy = SamplingStrategy(method=sampling_strategy, n_samples=n_samples_per_iteration)
         logger.info(f"Initialized '{sampling_strategy}' sampling strategy with n_samples={n_samples_per_iteration}")
-        self.warmup_strategy = WarmupStrategy(method=warmup_strategy, n_samples=self.pretrain_samples)
+        self.warmup_strategy = WarmupStrategy(method=warmup_strategy, n_samples=self.pretrain_samples, num_classes=num_classes)
         logger.info(f"Initialized '{warmup_strategy}' warmup strategy with n_samples={self.pretrain_samples}")
         self.warmup_epochs = warmup_epochs
         self.warmup_batch_size = warmup_batch_size
