@@ -229,7 +229,7 @@ class SamplingStrategy:
             'margin_multilabel',
             'sklearn_coreset',
             'sklearn_typiclust',   
-            'quantiles',
+            'all_quantiles',
             'best_single',
             'best_multiclass',
             'most_confident_classes'
@@ -253,7 +253,7 @@ class SamplingStrategy:
             'margin_multilabel': self._margin_multilabel,
             'sklearn_coreset': self._sklearn_coreset,
             'sklearn_typiclust': self._sklearn_typiclust,
-            'quantiles': self._quantiles,
+            'all_quantiles': self._all_quantiles,
             'best_single': self._best_single, 
             'best_multiclass': self._best_multiclass, 
             'most_confident_classes': self._most_confident_classes
@@ -412,7 +412,7 @@ class SamplingStrategy:
         return self._random()
     
 
-    def _quantiles(self) -> np.ndarray:
+    def _all_quantiles(self) -> np.ndarray:
         """
         Custom sampling template: randomly select a number of samples per class based on quantiles distribution
 
