@@ -60,10 +60,14 @@ def average_supplementary(all_supps: list[dict]) -> dict:
     """Average top-level numeric supplementary fields across datasets."""
     if not all_supps:
         return {}
-    numeric_keys = {k for s in all_supps for k, v in s.items() if isinstance(v, (int, float))}
+    numeric_keys = {
+        k for s in all_supps for k, v in s.items() if isinstance(v, (int, float))
+    }
     result = {}
     for key in sorted(numeric_keys):
-        values = [s[key] for s in all_supps if key in s and isinstance(s[key], (int, float))]
+        values = [
+            s[key] for s in all_supps if key in s and isinstance(s[key], (int, float))
+        ]
         if values:
             result[key] = round(sum(values) / len(values), 6)
     return result
@@ -109,13 +113,15 @@ def print_leaderboard(all_data: dict, budget: int) -> None:
         if cycle_row is None:
             print(f"  Warning: no cycle found at n_labeled={budget} for {dataset}")
             continue
-        rows.append({
-            "dataset": dataset,
-            "aulc_mAP_mean": cycle_row.get("aulc_mAP_mean"),
-            "computational_cost": rel_cost,
-            "sampling_time_s_mean": cycle_row.get("sampling_time_s_mean"),
-            "total_annotation_cost": total_annot,
-        })
+        rows.append(
+            {
+                "dataset": dataset,
+                "aulc_mAP_mean": cycle_row.get("aulc_mAP_mean"),
+                "computational_cost": rel_cost,
+                "sampling_time_s_mean": cycle_row.get("sampling_time_s_mean"),
+                "total_annotation_cost": total_annot,
+            }
+        )
 
     leaderboard_cols = [
         ("aulc_mAP_mean", "AULC mAP"),
@@ -125,13 +131,19 @@ def print_leaderboard(all_data: dict, budget: int) -> None:
     ]
 
     col_width = 18
-    header = f"{'Dataset':<10}" + "".join(f"  {label:>{col_width}}" for _, label in leaderboard_cols)
+    header = f"{'Dataset':<10}" + "".join(
+        f"  {label:>{col_width}}" for _, label in leaderboard_cols
+    )
     print(header)
     print("-" * len(header))
 
     for r in rows:
         vals = "".join(
-            f"  {r[col]:>{col_width}.5f}" if isinstance(r[col], (int, float)) else f"  {'N/A':>{col_width}}"
+            (
+                f"  {r[col]:>{col_width}.5f}"
+                if isinstance(r[col], (int, float))
+                else f"  {'N/A':>{col_width}}"
+            )
             for col, _ in leaderboard_cols
         )
         print(f"{r['dataset']:<10}{vals}")
@@ -152,16 +164,34 @@ def print_leaderboard(all_data: dict, budget: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Average active learning results across datasets.")
-    parser.add_argument("--method", required=True, help="Sampling method prefix, e.g. margin_multilabel")
-    parser.add_argument("--cycle", type=int, default=None, help="Show only this cycle number (1-indexed)")
-    parser.add_argument("--budget", type=int, default=500, help="Sample budget for leaderboard row (default: 500)")
+    parser = argparse.ArgumentParser(
+        description="Average active learning results across datasets."
+    )
+    parser.add_argument(
+        "--method", required=True, help="Sampling method prefix, e.g. margin_multilabel"
+    )
+    parser.add_argument(
+        "--cycle",
+        type=int,
+        default=None,
+        help="Show only this cycle number (1-indexed)",
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=500,
+        help="Sample budget for leaderboard row (default: 500)",
+    )
     parser.add_argument(
         "--dir",
         default=None,
         help="Path to baselines directory (default: <script_dir>/participant/Wang)",
     )
-    parser.add_argument("--verbose", action="store_true", help="Show full per-cycle table and supplementary averages")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show full per-cycle table and supplementary averages",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent
@@ -173,7 +203,10 @@ def main() -> None:
 
     files = find_method_files(baselines_dir, args.method)
     if not files:
-        print(f"Error: no files found for method '{args.method}' in {baselines_dir}", file=sys.stderr)
+        print(
+            f"Error: no files found for method '{args.method}' in {baselines_dir}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"Method: {args.method}")
@@ -184,11 +217,15 @@ def main() -> None:
         with open(path) as f:
             all_data[dataset] = yaml.safe_load(f)
 
-    all_curves = [d["learning_curve"] for d in all_data.values() if "learning_curve" in d]
+    all_curves = [
+        d["learning_curve"] for d in all_data.values() if "learning_curve" in d
+    ]
     all_supps = [d["supplementary"] for d in all_data.values() if "supplementary" in d]
 
     # --- Leaderboard (always shown) ---
-    print(f"=== Leaderboard metrics at {args.budget}-sample budget (averaged across {len(files)} datasets) ===\n")
+    print(
+        f"=== Leaderboard metrics at {args.budget}-sample budget (averaged across {len(files)} datasets) ===\n"
+    )
     print_leaderboard(all_data, args.budget)
 
     if not args.verbose:
@@ -197,7 +234,9 @@ def main() -> None:
     # --- Verbose: full cycle table ---
     print()
     if args.cycle is not None:
-        print(f"=== Cycle {args.cycle} results (averaged across {len(files)} datasets) ===\n")
+        print(
+            f"=== Cycle {args.cycle} results (averaged across {len(files)} datasets) ===\n"
+        )
         rows = []
         for dataset, data in all_data.items():
             curve = data.get("learning_curve", [])
@@ -213,21 +252,31 @@ def main() -> None:
 
         metric_keys = sorted(get_numeric_keys([r for _, r in rows]))
         col_w = max(len(k) for k in metric_keys) if metric_keys else 10
-        header = f"{'Dataset':<8}" + "".join(f"  {k:>{max(col_w, 12)}}" for k in metric_keys)
+        header = f"{'Dataset':<8}" + "".join(
+            f"  {k:>{max(col_w, 12)}}" for k in metric_keys
+        )
         print(header)
         print("-" * len(header))
         for dataset, row in rows:
-            vals = "".join(f"  {row.get(k, float('nan')):>{max(col_w, 12)}.5f}" for k in metric_keys)
+            vals = "".join(
+                f"  {row.get(k, float('nan')):>{max(col_w, 12)}.5f}"
+                for k in metric_keys
+            )
             print(f"{dataset:<8}{vals}")
 
         avg_row: dict = {}
         for key in metric_keys:
-            values = [r.get(key) for _, r in rows if isinstance(r.get(key), (int, float))]
+            values = [
+                r.get(key) for _, r in rows if isinstance(r.get(key), (int, float))
+            ]
             if values:
                 avg_row[key] = round(sum(values) / len(values), 6)
 
         print("-" * len(header))
-        vals = "".join(f"  {avg_row.get(k, float('nan')):>{max(col_w, 12)}.5f}" for k in metric_keys)
+        vals = "".join(
+            f"  {avg_row.get(k, float('nan')):>{max(col_w, 12)}.5f}"
+            for k in metric_keys
+        )
         print(f"{'Average':<8}{vals}")
 
     else:
@@ -238,11 +287,16 @@ def main() -> None:
         else:
             metric_keys = [k for k in averaged[0] if k != "cycle"]
             col_w = max(len(k) for k in metric_keys) if metric_keys else 10
-            header = f"{'Cycle':>7}" + "".join(f"  {k:>{max(col_w, 12)}}" for k in metric_keys)
+            header = f"{'Cycle':>7}" + "".join(
+                f"  {k:>{max(col_w, 12)}}" for k in metric_keys
+            )
             print(header)
             print("-" * len(header))
             for row in averaged:
-                vals = "".join(f"  {row.get(k, float('nan')):>{max(col_w, 12)}.5f}" for k in metric_keys)
+                vals = "".join(
+                    f"  {row.get(k, float('nan')):>{max(col_w, 12)}.5f}"
+                    for k in metric_keys
+                )
                 print(f"{row['cycle']:>7}{vals}")
 
         if all_supps:

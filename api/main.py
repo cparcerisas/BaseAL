@@ -1,25 +1,29 @@
 """
 FastAPI application for serving embeddings data and active learning
 """
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pathlib import Path
-import tomllib
-import numpy as np
-from typing import List, Dict, Any, Optional
+
 import logging
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 import sys
-import pandas as pd
+import tomllib
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import librosa
 import librosa.display
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+matplotlib.use("Agg")  # Use non-interactive backend
 import base64
 import io
+
+import matplotlib.pyplot as plt
 
 # Add core module to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,7 +43,11 @@ app = FastAPI(title="BaseAL API")
 # Configure CORS to allow requests from the React app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:8080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,7 +64,9 @@ active_learner: Optional[ActiveLearner] = None
 
 # Global manager instance (for managing multiple experiments)
 manager: Optional[Manager] = None
-selected_experiment_index: int = 0  # Which experiment to use for single-experiment endpoints
+selected_experiment_index: int = (
+    0  # Which experiment to use for single-experiment endpoints
+)
 
 
 def reduce_dimensions(embeddings: np.ndarray, n_components: int = 3) -> np.ndarray:
@@ -107,11 +117,9 @@ def load_embeddings_from_folder(folder_path: Path) -> List[Dict[str, Any]]:
     for npy_file in npy_files:
         try:
             data = np.load(npy_file)
-            embeddings_data.append({
-                "filename": npy_file.name,
-                "embeddings": data,
-                "shape": data.shape
-            })
+            embeddings_data.append(
+                {"filename": npy_file.name, "embeddings": data, "shape": data.shape}
+            )
             logger.info(f"Loaded {npy_file.name}: shape {data.shape}")
         except Exception as e:
             logger.error(f"Error loading {npy_file}: {e}")
@@ -124,6 +132,7 @@ def load_embeddings_from_folder(folder_path: Path) -> List[Dict[str, Any]]:
 def info():
     return {"message": "BaseAL Embeddings API", "version": __version__}
 
+
 # @app.get("/api/generate")
 # def generate_embeddings():
 #     try:
@@ -131,7 +140,6 @@ def info():
 #     except:
 #         raise HTTPException(status_code=404, detail=f"Embedding generation failed")
 #     return {"status": "complete"}
-
 
 
 @app.get("/api/models")
@@ -142,12 +150,17 @@ def list_models():
     if EMBEDDINGS_BASE_PATH.exists():
         for model_dir in EMBEDDINGS_BASE_PATH.iterdir():
             if model_dir.is_dir():
-                models.append({
-                    "name": model_dir.name,
-                    "path": str(model_dir.relative_to(EMBEDDINGS_BASE_PATH))
-                })
+                models.append(
+                    {
+                        "name": model_dir.name,
+                        "path": str(model_dir.relative_to(EMBEDDINGS_BASE_PATH)),
+                    }
+                )
     else:
-        raise HTTPException(status_code=404, detail=f"Embedding base path {EMBEDDINGS_BASE_PATH} doesn't exist")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Embedding base path {EMBEDDINGS_BASE_PATH} doesn't exist",
+        )
 
     return {"models": models}
 
@@ -155,7 +168,7 @@ def list_models():
 @app.get("/api/embeddings/{model_name}/datasets")
 def list_datasets(model_name: str):
     """List available datasets for a given model"""
-    model_path = EMBEDDINGS_BASE_PATH / model_name 
+    model_path = EMBEDDINGS_BASE_PATH / model_name
 
     if not model_path.exists():
         raise HTTPException(status_code=404, detail=f"Model not found: {model_name}")
@@ -164,10 +177,7 @@ def list_datasets(model_name: str):
     for dataset_dir in model_path.iterdir():
         if dataset_dir.is_dir():
             npy_files = list(dataset_dir.glob("*.npy"))
-            datasets.append({
-                "name": dataset_dir.name,
-                "file_count": len(npy_files)
-            })
+            datasets.append({"name": dataset_dir.name, "file_count": len(npy_files)})
 
     return {"model": model_name, "datasets": datasets}
 
@@ -188,8 +198,7 @@ def get_embeddings_3d(model_name: str, dataset_name: str):
 
     if not folder_path.exists():
         raise HTTPException(
-            status_code=404,
-            detail=f"Dataset not found: {model_name}/{dataset_name}"
+            status_code=404, detail=f"Dataset not found: {model_name}/{dataset_name}"
         )
 
     try:
@@ -205,11 +214,13 @@ def get_embeddings_3d(model_name: str, dataset_name: str):
             n_samples = embeddings.shape[0]
 
             all_embeddings.append(embeddings)
-            file_info.append({
-                "filename": item["filename"],
-                "n_samples": n_samples,
-                "original_shape": item["shape"]
-            })
+            file_info.append(
+                {
+                    "filename": item["filename"],
+                    "n_samples": n_samples,
+                    "original_shape": item["shape"],
+                }
+            )
 
         # Concatenate all embeddings
         all_embeddings_array = np.vstack(all_embeddings)
@@ -229,12 +240,14 @@ def get_embeddings_3d(model_name: str, dataset_name: str):
             # Extract coordinates for this file
             coords = reduced_3d[start_idx:end_idx].tolist()
 
-            result.append({
-                "filename": info["filename"],
-                "file_index": i,
-                "n_samples": n_samples,
-                "coordinates": coords
-            })
+            result.append(
+                {
+                    "filename": info["filename"],
+                    "file_index": i,
+                    "n_samples": n_samples,
+                    "coordinates": coords,
+                }
+            )
 
             start_idx = end_idx
 
@@ -242,14 +255,16 @@ def get_embeddings_3d(model_name: str, dataset_name: str):
             "model": model_name,
             "dataset": dataset_name,
             "total_samples": len(all_embeddings_array),
-            "files": result
+            "files": result,
         }
 
     except Exception as e:
         logger.error(f"Error processing embeddings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ==================== Manager Endpoints ====================
+
 
 @app.post("/api/manager/initialize")
 def initialize_manager(config_path: str = "core/config.yml"):
@@ -268,7 +283,9 @@ def initialize_manager(config_path: str = "core/config.yml"):
         config_file = BASE_DIR / config_path
 
         if not config_file.exists():
-            raise HTTPException(status_code=404, detail=f"Config file not found: {config_file}")
+            raise HTTPException(
+                status_code=404, detail=f"Config file not found: {config_file}"
+            )
 
         logger.info(f"Initializing Manager with config: {config_file}")
         logger.info(f"Base directory: {BASE_DIR}")
@@ -277,10 +294,7 @@ def initialize_manager(config_path: str = "core/config.yml"):
         manager = Manager(config_file, base_dir=BASE_DIR)
         selected_experiment_index = 0  # Reset to first experiment
 
-        return {
-            "status": "initialized",
-            "summary": manager.get_summary()
-        }
+        return {"status": "initialized", "summary": manager.get_summary()}
 
     except Exception as e:
         logger.error(f"Error initializing manager: {e}")
@@ -296,7 +310,7 @@ def add_experiment_to_manager(
     pretrain_samples: Optional[int] = None,
     learning_rate: float = 0.0001,
     hidden_dim: Optional[int] = None,
-    device: str = "cpu"
+    device: str = "cpu",
 ):
     """
     Add a new experiment to the manager
@@ -315,27 +329,27 @@ def add_experiment_to_manager(
     global manager
 
     if manager is None:
-        raise HTTPException(status_code=400, detail="Manager not initialized. Call /api/manager/initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Manager not initialized. Call /api/manager/initialize first.",
+        )
 
     try:
         new_config = {
-            'embeddings_dir': str(EMBEDDINGS_BASE_PATH / model_name),
-            'annotations_path': str(BASE_DIR / "ESC10_BASEAL" / "labels.csv"),
-            'model_name': model_name,
-            'sampling_strategy': sampling_strategy,
-            'warmup_strategy': warmup_strategy,
-            'pretrain_samples': pretrain_samples,
-            'learning_rate': learning_rate,
-            'hidden_dim': hidden_dim,
-            'device': device
+            "embeddings_dir": str(EMBEDDINGS_BASE_PATH / model_name),
+            "annotations_path": str(BASE_DIR / "ESC10_BASEAL" / "labels.csv"),
+            "model_name": model_name,
+            "sampling_strategy": sampling_strategy,
+            "warmup_strategy": warmup_strategy,
+            "pretrain_samples": pretrain_samples,
+            "learning_rate": learning_rate,
+            "hidden_dim": hidden_dim,
+            "device": device,
         }
 
         manager.add(new_config, name=name)
 
-        return {
-            "status": "added",
-            "summary": manager.get_summary()
-        }
+        return {"status": "added", "summary": manager.get_summary()}
 
     except Exception as e:
         logger.error(f"Error adding experiment: {e}")
@@ -344,10 +358,7 @@ def add_experiment_to_manager(
 
 @app.post("/api/manager/run")
 def run_manager_cycle(
-    n_samples: int = 5,
-    epochs: int = 5,
-    batch_size: int = 8,
-    parallel: bool = False
+    n_samples: int = 5, epochs: int = 5, batch_size: int = 8, parallel: bool = False
 ):
     """
     Run one AL cycle across all experiments
@@ -364,20 +375,17 @@ def run_manager_cycle(
     global manager
 
     if manager is None:
-        raise HTTPException(status_code=400, detail="Manager not initialized. Call /api/manager/initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Manager not initialized. Call /api/manager/initialize first.",
+        )
 
     try:
         results = manager.run(
-            n_samples=n_samples,
-            epochs=epochs,
-            batch_size=batch_size,
-            parallel=parallel
+            n_samples=n_samples, epochs=epochs, batch_size=batch_size, parallel=parallel
         )
 
-        return {
-            "results": results,
-            "summary": manager.get_summary()
-        }
+        return {"results": results, "summary": manager.get_summary()}
 
     except Exception as e:
         logger.error(f"Error running manager cycle: {e}")
@@ -395,7 +403,10 @@ def list_manager_experiments():
     global manager
 
     if manager is None:
-        raise HTTPException(status_code=400, detail="Manager not initialized. Call /api/manager/initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Manager not initialized. Call /api/manager/initialize first.",
+        )
 
     return {
         "experiments": [
@@ -406,9 +417,11 @@ def list_manager_experiments():
                 "model_name": learner.model_name,
                 "n_labeled": len(learner.labeled_indices),
                 "n_unlabeled": len(learner.unlabeled_indices),
-                "training_history": learner.training_history
+                "training_history": learner.training_history,
             }
-            for i, (learner, name) in enumerate(zip(manager.experiments, manager.experiment_names))
+            for i, (learner, name) in enumerate(
+                zip(manager.experiments, manager.experiment_names)
+            )
         ]
     }
 
@@ -424,7 +437,10 @@ def get_manager_summary():
     global manager
 
     if manager is None:
-        raise HTTPException(status_code=400, detail="Manager not initialized. Call /api/manager/initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Manager not initialized. Call /api/manager/initialize first.",
+        )
 
     return manager.get_summary()
 
@@ -443,16 +459,16 @@ def save_manager_results(output_dir: str = "data/manager_experiments"):
     global manager
 
     if manager is None:
-        raise HTTPException(status_code=400, detail="Manager not initialized. Call /api/manager/initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Manager not initialized. Call /api/manager/initialize first.",
+        )
 
     try:
         save_path = BASE_DIR / output_dir
         manager.save(output_dir=save_path)
 
-        return {
-            "status": "saved",
-            "output_dir": str(save_path)
-        }
+        return {"status": "saved", "output_dir": str(save_path)}
 
     except Exception as e:
         logger.error(f"Error saving results: {e}")
@@ -473,10 +489,15 @@ def select_experiment(experiment_index: int):
     global manager, selected_experiment_index, active_learner
 
     if manager is None:
-        raise HTTPException(status_code=400, detail="Manager not initialized. Call /api/manager/initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Manager not initialized. Call /api/manager/initialize first.",
+        )
 
     if experiment_index < 0 or experiment_index >= len(manager.experiments):
-        raise HTTPException(status_code=400, detail=f"Invalid experiment index: {experiment_index}")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid experiment index: {experiment_index}"
+        )
 
     selected_experiment_index = experiment_index
     # Also set the active_learner to point to the selected experiment for backward compatibility
@@ -486,18 +507,19 @@ def select_experiment(experiment_index: int):
         "status": "selected",
         "experiment_index": selected_experiment_index,
         "experiment_name": manager.experiment_names[selected_experiment_index],
-        "state": active_learner.get_state()
+        "state": active_learner.get_state(),
     }
 
 
 # ==================== Active Learning Endpoints ====================
+
 
 @app.post("/api/active-learning/initialize")
 def initialize_active_learner(
     model_name: str = "birdnet",
     dataset_name: str = "esc50",
     warmup_strategy: str = "density",
-    pretrain_samples: Optional[int] = None
+    pretrain_samples: Optional[int] = None,
 ):
     """
     Initialize the active learning pipeline
@@ -522,10 +544,16 @@ def initialize_active_learner(
         logger.info(f"  Annotations exists: {annotations_path.exists()}")
 
         if not embeddings_dir.exists():
-            raise HTTPException(status_code=404, detail=f"Embeddings directory not found: {embeddings_dir}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Embeddings directory not found: {embeddings_dir}",
+            )
 
         if not annotations_path.exists():
-            raise HTTPException(status_code=404, detail=f"Annotations file not found: {annotations_path}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Annotations file not found: {annotations_path}",
+            )
 
         # Initialize active learner
         active_learner = ActiveLearner(
@@ -540,10 +568,7 @@ def initialize_active_learner(
             pretrain_samples=pretrain_samples,
         )
 
-        return {
-            "status": "initialized",
-            "state": active_learner.get_state()
-        }
+        return {"status": "initialized", "state": active_learner.get_state()}
 
     except Exception as e:
         logger.error(f"Error initializing active learner: {e}")
@@ -564,7 +589,10 @@ def sample_next_batch(n_samples: int = 200):
     global active_learner
 
     if active_learner is None:
-        raise HTTPException(status_code=400, detail="Active learner not initialized. Call /initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Active learner not initialized. Call /initialize first.",
+        )
 
     try:
         # Sample using random strategy
@@ -575,7 +603,7 @@ def sample_next_batch(n_samples: int = 200):
 
         return {
             "selected_indices": selected_indices,
-            "state": active_learner.get_state()
+            "state": active_learner.get_state(),
         }
 
     except Exception as e:
@@ -598,17 +626,17 @@ def train_model(epochs: int = 5, batch_size: int = 8):
     global active_learner
 
     if active_learner is None:
-        raise HTTPException(status_code=400, detail="Active learner not initialized. Call /initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Active learner not initialized. Call /initialize first.",
+        )
 
     try:
         metrics = active_learner.train_step(epochs=epochs, batch_size=batch_size)
 
         # print(active_learner.get_state())
 
-        return {
-            "metrics": metrics,
-            "state": active_learner.get_state()
-        }
+        return {"metrics": metrics, "state": active_learner.get_state()}
 
     except Exception as e:
         logger.error(f"Error training: {e}")
@@ -616,34 +644,45 @@ def train_model(epochs: int = 5, batch_size: int = 8):
 
 
 @app.get("/api/active-learning/embeddings-3d")
-def get_active_learning_embeddings(dimension_reduction: str = 'UMAP', projection: str = 'euclidean'):
+def get_active_learning_embeddings(
+    dimension_reduction: str = "UMAP", projection: str = "euclidean"
+):
     """
     Get 3D embeddings from the trained model
 
     Returns:
         3D coordinates, labels, and per-sample uncertainties
     """
-    global active_learner 
+    global active_learner
 
     if active_learner is None:
-        raise HTTPException(status_code=400, detail="Active learner not initialized. Call /initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Active learner not initialized. Call /initialize first.",
+        )
 
     try:
         # Get 3D embeddings from model
-        embeddings_3d = active_learner.get_embeddings_3d(reduction_method=dimension_reduction, projection=projection)
+        embeddings_3d = active_learner.get_embeddings_3d(
+            reduction_method=dimension_reduction, projection=projection
+        )
 
         # Get labels and uncertainties - apply the same subsampling as embeddings
         if active_learner.idx is not None:
             # Use the same subsampling indices
             labels = active_learner.labels[active_learner.idx].tolist()
             # Get labeled/unlabeled status for subsampled indices
-            labeled_mask = [i in active_learner.labeled_indices for i in active_learner.idx]
+            labeled_mask = [
+                i in active_learner.labeled_indices for i in active_learner.idx
+            ]
             # Get uncertainties for subsampled indices
             uncertainties = active_learner.uncertainties[active_learner.idx].tolist()
         else:
             # No subsampling applied
             labels = active_learner.labels.tolist()
-            labeled_mask = [i in active_learner.labeled_indices for i in range(len(embeddings_3d))]
+            labeled_mask = [
+                i in active_learner.labeled_indices for i in range(len(embeddings_3d))
+            ]
             uncertainties = active_learner.uncertainties.tolist()
 
         # Convert labels to label names and extract primary labels for coloring
@@ -655,16 +694,22 @@ def get_active_learning_embeddings(dimension_reduction: str = 'UMAP', projection
 
             for label_vector in labels:
                 # Find indices where label is 1
-                active_indices = [i for i, val in enumerate(label_vector) if val == 1 or val == 1.0]
+                active_indices = [
+                    i for i, val in enumerate(label_vector) if val == 1 or val == 1.0
+                ]
                 # Get corresponding label names
-                active_labels = [active_learner.idx_to_label[idx] for idx in active_indices]
+                active_labels = [
+                    active_learner.idx_to_label[idx] for idx in active_indices
+                ]
 
                 # For display: join all labels with semicolon
                 label_names.append(";".join(active_labels) if active_labels else "none")
 
                 # For coloring: use first label (primary label)
                 # This ensures consistent color assignment for multilabel points
-                label_indices_for_color.append(active_indices[0] if active_indices else 0)
+                label_indices_for_color.append(
+                    active_indices[0] if active_indices else 0
+                )
         else:
             # Single-label: labels are integers, look up directly
             label_names = [active_learner.idx_to_label[label] for label in labels]
@@ -672,9 +717,14 @@ def get_active_learning_embeddings(dimension_reduction: str = 'UMAP', projection
 
         # Debug: Check uncertainty range
         import numpy as np
+
         unc_array = np.array(uncertainties)
-        logger.info(f"Uncertainties - min: {unc_array.min():.4f}, max: {unc_array.max():.4f}, mean: {unc_array.mean():.4f}")
-        logger.info(f"Uncertainties shape: {unc_array.shape}, unique values: {len(np.unique(unc_array))}")
+        logger.info(
+            f"Uncertainties - min: {unc_array.min():.4f}, max: {unc_array.max():.4f}, mean: {unc_array.mean():.4f}"
+        )
+        logger.info(
+            f"Uncertainties shape: {unc_array.shape}, unique values: {len(np.unique(unc_array))}"
+        )
         print(f"Sample uncertainties: {uncertainties[:20]}")
 
         # Sanity check: clip to [0, 1] if values are out of range
@@ -689,7 +739,7 @@ def get_active_learning_embeddings(dimension_reduction: str = 'UMAP', projection
             "label_indices_for_color": label_indices_for_color,  # Primary label for color assignment
             "labeled_mask": labeled_mask,
             "uncertainties": uncertainties,  # Normalized uncertainty scores [0, 1]
-            "state": active_learner.get_state()
+            "state": active_learner.get_state(),
         }
 
     except Exception as e:
@@ -708,9 +758,13 @@ def get_active_learning_state():
     global active_learner
 
     if active_learner is None:
-        raise HTTPException(status_code=400, detail="Active learner not initialized. Call /initialize first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Active learner not initialized. Call /initialize first.",
+        )
 
     return active_learner.get_state()
+
 
 @app.get("/api/media")
 def get_media(index: int):
@@ -734,9 +788,8 @@ def get_media(index: int):
 
         # Retrieve audio path from original index
         annotations = pd.read_csv(active_learner.annotations_path)
-        audio_filename = annotations['filename'][original_index]
+        audio_filename = annotations["filename"][original_index]
         path = active_learner.audio_dir / audio_filename
-        
 
         logger.info(f"Loading audio from: {path}")
 
@@ -754,38 +807,38 @@ def get_media(index: int):
 
         # Create figure for spectrogram - smaller size, no borders or labels
         fig = plt.figure(figsize=(3.5, 2), frameon=False)
-        ax = plt.Axes(fig, [0., 0., 1., 1.])
+        ax = plt.Axes(fig, [0.0, 0.0, 1.0, 1.0])
         ax.set_axis_off()
         fig.add_axes(ax)
 
         # Display spectrogram with no axes, labels, or colorbar
-        librosa.display.specshow(S_dB, sr=sr, fmax=8000, ax=ax, cmap='viridis')
+        librosa.display.specshow(S_dB, sr=sr, fmax=8000, ax=ax, cmap="viridis")
 
         # Convert spectrogram to base64 image
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', pad_inches=0)
+        plt.savefig(buf, format="png", dpi=100, bbox_inches="tight", pad_inches=0)
         buf.seek(0)
-        spectrogram_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        spectrogram_base64 = base64.b64encode(buf.read()).decode("utf-8")
         plt.close(fig)
 
         # Read audio file and encode to base64
-        with open(path, 'rb') as audio_file:
-            audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
+        with open(path, "rb") as audio_file:
+            audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
 
         # Determine audio MIME type based on file extension
         audio_extension = Path(path).suffix.lower()
         mime_types = {
-            '.wav': 'audio/wav',
-            '.mp3': 'audio/mpeg',
-            '.ogg': 'audio/ogg',
-            '.flac': 'audio/flac',
-            '.m4a': 'audio/mp4'
+            ".wav": "audio/wav",
+            ".mp3": "audio/mpeg",
+            ".ogg": "audio/ogg",
+            ".flac": "audio/flac",
+            ".m4a": "audio/mp4",
         }
-        audio_mime = mime_types.get(audio_extension, 'audio/wav')
+        audio_mime = mime_types.get(audio_extension, "audio/wav")
 
         return {
             "audio": f"data:{audio_mime};base64,{audio_base64}",
-            "spectrogram": f"data:image/png;base64,{spectrogram_base64}"
+            "spectrogram": f"data:image/png;base64,{spectrogram_base64}",
         }
 
     except Exception as e:
@@ -795,4 +848,5 @@ def get_media(index: int):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000)

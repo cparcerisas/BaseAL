@@ -2,13 +2,15 @@
 Entry point for BaseAL
 Serves both the FastAPI backend and React frontend
 """
+
 import os
 import threading
-import uvicorn
 from pathlib import Path
+
+import uvicorn
 from fastapi import Request
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
 # Import the FastAPI app from api module
@@ -79,8 +81,9 @@ def _warmup():
     """Trigger umap/numba JIT compilation so the first real request is fast."""
     global _app_ready
     try:
-        import umap
         import numpy as np
+        import umap
+
         umap.UMAP(n_components=2, n_neighbors=3).fit_transform(np.random.rand(20, 5))
     except Exception:
         pass
@@ -103,11 +106,17 @@ FRONTEND_BUILD_DIR = BASE_DIR / "app" / "dist"
 # Serve static files from React build
 if FRONTEND_BUILD_DIR.exists():
     # Mount static assets (js, css, etc.)
-    app.mount("/assets", StaticFiles(directory=FRONTEND_BUILD_DIR / "assets"), name="assets")
+    app.mount(
+        "/assets", StaticFiles(directory=FRONTEND_BUILD_DIR / "assets"), name="assets"
+    )
 
     # Remove the existing root route from api/main.py and replace with frontend
     # Find and remove the existing "/" route
-    app.routes[:] = [route for route in app.routes if not (hasattr(route, 'path') and route.path == "/")]
+    app.routes[:] = [
+        route
+        for route in app.routes
+        if not (hasattr(route, "path") and route.path == "/")
+    ]
 
     _no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
@@ -115,7 +124,9 @@ if FRONTEND_BUILD_DIR.exists():
     @app.get("/")
     async def serve_index():
         """Serve the React SPA index"""
-        return FileResponse(FRONTEND_BUILD_DIR / "index.html", headers=_no_cache_headers)
+        return FileResponse(
+            FRONTEND_BUILD_DIR / "index.html", headers=_no_cache_headers
+        )
 
     # Catch-all route for SPA - must be after API routes
     @app.get("/{full_path:path}")
@@ -128,7 +139,10 @@ if FRONTEND_BUILD_DIR.exists():
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
         # Return index.html for SPA routing
-        return FileResponse(FRONTEND_BUILD_DIR / "index.html", headers=_no_cache_headers)
+        return FileResponse(
+            FRONTEND_BUILD_DIR / "index.html", headers=_no_cache_headers
+        )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))

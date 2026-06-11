@@ -17,16 +17,15 @@ from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
-from matplotlib.lines import Line2D
-from matplotlib.colors import hsv_to_rgb
 import numpy as np
 import pandas as pd
+import umap
+from matplotlib.axes import Axes
+from matplotlib.colors import hsv_to_rgb
+from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-import umap
-
 
 RANDOM_STATE = 0
 LEGEND_CLASS_LIMIT = 15
@@ -154,9 +153,7 @@ def visualize_embeddings(
 
 def _validate_inputs(with_label: bool, max_reference_samples: int) -> None:
     if not isinstance(with_label, bool):
-        raise TypeError(
-            f"with_label must be a bool, got {type(with_label).__name__}"
-        )
+        raise TypeError(f"with_label must be a bool, got {type(with_label).__name__}")
     if isinstance(max_reference_samples, bool) or not isinstance(
         max_reference_samples, Integral
     ):
@@ -187,9 +184,7 @@ def _resolve_dataset(dataset_path: str | Path) -> ResolvedDataset:
             f"Expected embeddings directory under dataset root, but it was not found: {embeddings_root}"
         )
 
-    candidate_dirs = sorted(
-        path for path in embeddings_root.iterdir() if path.is_dir()
-    )
+    candidate_dirs = sorted(path for path in embeddings_root.iterdir() if path.is_dir())
 
     if not candidate_dirs:
         raise FileNotFoundError(
@@ -315,9 +310,7 @@ def _normalize_idxes(
     if idxes_array.dtype == np.bool_ or np.issubdtype(idxes_array.dtype, np.bool_):
         raise TypeError("idxes must contain integer indices, not booleans")
     if not np.issubdtype(idxes_array.dtype, np.integer):
-        raise TypeError(
-            f"idxes must contain integers, got dtype {idxes_array.dtype}"
-        )
+        raise TypeError(f"idxes must contain integers, got dtype {idxes_array.dtype}")
 
     normalized = idxes_array.astype(np.int64, copy=False)
     if np.any(normalized < 0):
@@ -390,7 +383,9 @@ def _build_labels(
 
         return labels, label_names, label_indices_for_color
 
-    labels = np.array([label_to_idx[label_string] for label_string in label_strings], dtype=np.int64)
+    labels = np.array(
+        [label_to_idx[label_string] for label_string in label_strings], dtype=np.int64
+    )
     label_names = [class_names[label_idx] for label_idx in labels]
     return labels, label_names, labels.copy()
 
@@ -449,11 +444,11 @@ def _reduce_embeddings(
         )
     n_reference_samples, n_features = reference_embeddings.shape
     if n_reference_samples == 0:
-        raise ValueError("At least one reference embedding is required for visualisation")
-    if embeddings.ndim != 2:
         raise ValueError(
-            f"embeddings must be a 2D array, got shape {embeddings.shape}"
+            "At least one reference embedding is required for visualisation"
         )
+    if embeddings.ndim != 2:
+        raise ValueError(f"embeddings must be a 2D array, got shape {embeddings.shape}")
     if embeddings.shape[1] != n_features:
         raise ValueError(
             "Reference embeddings and selected embeddings must share the same feature "
@@ -509,7 +504,9 @@ def _fallback_projection(embeddings: np.ndarray) -> np.ndarray:
     if n_features >= 2:
         coordinates = embeddings[:, :2]
     elif n_features == 1:
-        coordinates = np.column_stack([embeddings[:, 0], np.zeros(n_samples, dtype=np.float32)])
+        coordinates = np.column_stack(
+            [embeddings[:, 0], np.zeros(n_samples, dtype=np.float32)]
+        )
     else:
         coordinates = np.zeros((n_samples, 2), dtype=np.float32)
 
@@ -595,7 +592,9 @@ def _present_class_colors(
         hues = np.array([2.0 / 3.0], dtype=np.float32)
     else:
         hues = (
-            np.linspace(0.0, 1.0, len(present_indices), endpoint=False, dtype=np.float32)
+            np.linspace(
+                0.0, 1.0, len(present_indices), endpoint=False, dtype=np.float32
+            )
             + COLOR_WHEEL_OFFSET
         ) % 1.0
 

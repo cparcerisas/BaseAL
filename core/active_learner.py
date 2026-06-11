@@ -1,41 +1,43 @@
 """
 Active learning pipeline for embeddings
 """
+
+import copy
+import json
+import logging
+import os
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from pathlib import Path
-import pandas as pd
-from typing import List, Tuple, Dict, Optional
-import logging
-import warnings
-import os
 import umap
-import time
 import yaml
-import json
-import copy
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.decomposition import PCA
+from sklearn.metrics import average_precision_score, f1_score
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import f1_score, average_precision_score
 
 # Initialize sampling strategy
 from .utils.sampling import SamplingStrategy, WarmupStrategy
 
 # Suppress numba warnings and debug output
-warnings.filterwarnings('ignore', module='numba')
-warnings.filterwarnings('ignore', category=FutureWarning)
-os.environ['NUMBA_DISABLE_PERFORMANCE_WARNINGS'] = '1'
+warnings.filterwarnings("ignore", module="numba")
+warnings.filterwarnings("ignore", category=FutureWarning)
+os.environ["NUMBA_DISABLE_PERFORMANCE_WARNINGS"] = "1"
 
 # Set numba logging to WARNING to avoid verbose compilation details
-logging.getLogger('numba').setLevel(logging.WARNING)
+logging.getLogger("numba").setLevel(logging.WARNING)
 
 from .utils.model import EmbeddingClassifier
 
-logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,7 @@ def _prewarm_umap_module():
             n_components=3,
             metric="euclidean",
             low_memory=True,
-            verbose=False
+            verbose=False,
         )
         _ = dummy_reducer.fit_transform(dummy_data)
         end = time.time()
@@ -76,7 +78,9 @@ class Manager:
     Manages multiple parallel Active Learning experiments
     """
 
-    def __init__(self, config_path: Path, base_dir: Optional[Path] = None, verbose: bool = True):
+    def __init__(
+        self, config_path: Path, base_dir: Optional[Path] = None, verbose: bool = True
+    ):
         """
         Initialize Manager with experiments from config file
 
@@ -108,38 +112,38 @@ class Manager:
         Returns:
             List of configuration dictionaries
         """
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             config_data = yaml.safe_load(f)
 
-        if 'experiments' not in config_data:
+        if "experiments" not in config_data:
             raise ValueError("Config file must contain 'experiments' key")
 
-        experiments = config_data['experiments']
+        experiments = config_data["experiments"]
 
         # Convert string paths to Path objects and resolve relative to base_dir
         for exp in experiments:
-            if 'embeddings_dir' in exp:
-                emb_path = Path(exp['embeddings_dir'])
+            if "embeddings_dir" in exp:
+                emb_path = Path(exp["embeddings_dir"])
                 # If relative path, resolve relative to base_dir
                 if not emb_path.is_absolute():
-                    exp['embeddings_dir'] = self.base_dir / emb_path
+                    exp["embeddings_dir"] = self.base_dir / emb_path
                 else:
-                    exp['embeddings_dir'] = emb_path
+                    exp["embeddings_dir"] = emb_path
 
-            if 'annotations_path' in exp:
-                ann_path = Path(exp['annotations_path'])
+            if "annotations_path" in exp:
+                ann_path = Path(exp["annotations_path"])
                 # If relative path, resolve relative to base_dir
                 if not ann_path.is_absolute():
-                    exp['annotations_path'] = self.base_dir / ann_path
+                    exp["annotations_path"] = self.base_dir / ann_path
                 else:
-                    exp['annotations_path'] = ann_path
+                    exp["annotations_path"] = ann_path
 
-            if 'metadata_path' in exp:
-                meta_path = Path(exp['metadata_path'])
+            if "metadata_path" in exp:
+                meta_path = Path(exp["metadata_path"])
                 if not meta_path.is_absolute():
-                    exp['metadata_path'] = self.base_dir / meta_path
+                    exp["metadata_path"] = self.base_dir / meta_path
                 else:
-                    exp['metadata_path'] = meta_path
+                    exp["metadata_path"] = meta_path
 
         logger.info(f"Loaded {len(experiments)} experiment configurations from {path}")
         return experiments
@@ -148,21 +152,23 @@ class Manager:
         """Initialize ActiveLearner instances for each experiment config"""
         for i, config in enumerate(self.configs):
             # Extract experiment name if provided, otherwise use index
-            exp_name = config.pop('name', f'experiment_{i}')
+            exp_name = config.pop("name", f"experiment_{i}")
             self.experiment_names.append(exp_name)
 
             # Propagate verbose setting to each ActiveLearner
-            config.setdefault('verbose', self.verbose)
+            config.setdefault("verbose", self.verbose)
 
             logger.info(f"Initializing experiment: {exp_name}")
             learner = ActiveLearner(**config)
             self.experiments.append(learner)
 
-    def run(self,
-            n_samples: int = 5,
-            epochs: int = 5,
-            batch_size: int = 8,
-            parallel: bool = False) -> Dict[str, Dict]:
+    def run(
+        self,
+        n_samples: int = 5,
+        epochs: int = 5,
+        batch_size: int = 8,
+        parallel: bool = False,
+    ) -> Dict[str, Dict]:
         """
         Run one complete AL cycle for all experiments
 
@@ -175,7 +181,9 @@ class Manager:
         Returns:
             Dictionary mapping experiment names to their training metrics
         """
-        logger.info(f"Starting AL cycle: {n_samples} samples, {epochs} epochs, parallel={parallel}")
+        logger.info(
+            f"Starting AL cycle: {n_samples} samples, {epochs} epochs, parallel={parallel}"
+        )
 
         results = {}
 
@@ -183,7 +191,13 @@ class Manager:
             # Run experiments in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=len(self.experiments)) as executor:
                 future_to_name = {
-                    executor.submit(self._run_single_experiment, learner, n_samples, epochs, batch_size): name
+                    executor.submit(
+                        self._run_single_experiment,
+                        learner,
+                        n_samples,
+                        epochs,
+                        batch_size,
+                    ): name
                     for learner, name in zip(self.experiments, self.experiment_names)
                 }
 
@@ -200,7 +214,9 @@ class Manager:
             # Run experiments sequentially
             for learner, exp_name in zip(self.experiments, self.experiment_names):
                 try:
-                    metrics = self._run_single_experiment(learner, n_samples, epochs, batch_size)
+                    metrics = self._run_single_experiment(
+                        learner, n_samples, epochs, batch_size
+                    )
                     results[exp_name] = metrics
                     logger.info(f"Experiment '{exp_name}' completed: {metrics}")
                 except Exception as e:
@@ -209,11 +225,9 @@ class Manager:
 
         return results
 
-    def _run_single_experiment(self,
-                               learner: 'ActiveLearner',
-                               n_samples: int,
-                               epochs: int,
-                               batch_size: int) -> Dict:
+    def _run_single_experiment(
+        self, learner: "ActiveLearner", n_samples: int, epochs: int, batch_size: int
+    ) -> Dict:
         """
         Run one AL cycle for a single experiment
 
@@ -241,7 +255,7 @@ class Manager:
                 "loss": 0.0,
                 "accuracy": 0.0,
                 "n_labeled": len(learner.labeled_indices),
-                "n_unlabeled": len(learner.unlabeled_indices)
+                "n_unlabeled": len(learner.unlabeled_indices),
             }
 
         return metrics
@@ -255,14 +269,14 @@ class Manager:
             name: Optional name for the experiment
         """
         # Convert string paths to Path objects
-        if 'embeddings_dir' in new_config:
-            new_config['embeddings_dir'] = Path(new_config['embeddings_dir'])
-        if 'annotations_path' in new_config:
-            new_config['annotations_path'] = Path(new_config['annotations_path'])
-        if 'metadata_path' in new_config:
-            new_config['metadata_path'] = Path(new_config['metadata_path'])
+        if "embeddings_dir" in new_config:
+            new_config["embeddings_dir"] = Path(new_config["embeddings_dir"])
+        if "annotations_path" in new_config:
+            new_config["annotations_path"] = Path(new_config["annotations_path"])
+        if "metadata_path" in new_config:
+            new_config["metadata_path"] = Path(new_config["metadata_path"])
 
-        exp_name = name or f'experiment_{len(self.experiments)}'
+        exp_name = name or f"experiment_{len(self.experiments)}"
         self.experiment_names.append(exp_name)
 
         logger.info(f"Adding new experiment: {exp_name}")
@@ -277,61 +291,65 @@ class Manager:
             output_dir: Directory to save results (defaults to './results')
         """
         if output_dir is None:
-            output_dir = Path('./results')
+            output_dir = Path("./results")
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Save each experiment's history
         for learner, exp_name in zip(self.experiments, self.experiment_names):
             # Create experiment-specific results
             results = {
-                'experiment_name': exp_name,
-                'timestamp': timestamp,
-                'config': {
-                    'model_name': learner.model_name,
-                    'dataset_name': learner.dataset_name,
-                    'learning_rate': learner.learning_rate,
-                    'device': learner.device,
+                "experiment_name": exp_name,
+                "timestamp": timestamp,
+                "config": {
+                    "model_name": learner.model_name,
+                    "dataset_name": learner.dataset_name,
+                    "learning_rate": learner.learning_rate,
+                    "device": learner.device,
                 },
-                'aulc_mAP':      learner.compute_aulc('mAP'),
-                'aulc_accuracy': learner.compute_aulc('accuracy'),
-                'aulc_f1_score': learner.compute_aulc('f1_score'),
-                'final_state': learner.get_state(),
-                'training_history': learner.training_history
+                "aulc_mAP": learner.compute_aulc("mAP"),
+                "aulc_accuracy": learner.compute_aulc("accuracy"),
+                "aulc_f1_score": learner.compute_aulc("f1_score"),
+                "final_state": learner.get_state(),
+                "training_history": learner.training_history,
             }
 
             # Save to JSON file
-            output_file = output_dir / f'{exp_name}_{timestamp}.json'
-            with open(output_file, 'w') as f:
+            output_file = output_dir / f"{exp_name}_{timestamp}.json"
+            with open(output_file, "w") as f:
                 json.dump(results, f, indent=2)
 
             logger.info(f"Saved results for '{exp_name}' to {output_file}")
 
         # Save combined summary
         summary = {
-            'timestamp': timestamp,
-            'num_experiments': len(self.experiments),
-            'experiment_names': self.experiment_names,
-            'experiments': [
+            "timestamp": timestamp,
+            "num_experiments": len(self.experiments),
+            "experiment_names": self.experiment_names,
+            "experiments": [
                 {
-                    'name': name,
-                    'n_labeled': len(learner.labeled_indices),
-                    'n_unlabeled': len(learner.unlabeled_indices),
-                    'final_accuracy': learner.training_history[-1]['accuracy'] if learner.training_history else 0.0,
-                    'num_iterations': len(learner.training_history),
-                    'aulc_mAP':      learner.compute_aulc('mAP'),
-                    'aulc_accuracy': learner.compute_aulc('accuracy'),
-                    'aulc_f1_score': learner.compute_aulc('f1_score'),
+                    "name": name,
+                    "n_labeled": len(learner.labeled_indices),
+                    "n_unlabeled": len(learner.unlabeled_indices),
+                    "final_accuracy": (
+                        learner.training_history[-1]["accuracy"]
+                        if learner.training_history
+                        else 0.0
+                    ),
+                    "num_iterations": len(learner.training_history),
+                    "aulc_mAP": learner.compute_aulc("mAP"),
+                    "aulc_accuracy": learner.compute_aulc("accuracy"),
+                    "aulc_f1_score": learner.compute_aulc("f1_score"),
                 }
                 for learner, name in zip(self.experiments, self.experiment_names)
-            ]
+            ],
         }
 
-        summary_file = output_dir / f'summary_{timestamp}.json'
-        with open(summary_file, 'w') as f:
+        summary_file = output_dir / f"summary_{timestamp}.json"
+        with open(summary_file, "w") as f:
             json.dump(summary, f, indent=2)
 
         logger.info(f"Saved experiment summary to {summary_file}")
@@ -343,27 +361,29 @@ class Manager:
         Returns:
             Dictionary with summary information for all experiments
         """
-        summary = {
-            'num_experiments': len(self.experiments),
-            'experiments': []
-        }
+        summary = {"num_experiments": len(self.experiments), "experiments": []}
 
         for learner, name in zip(self.experiments, self.experiment_names):
             exp_summary = {
-                'name': name,
-                'n_labeled': len(learner.labeled_indices),
-                'n_unlabeled': len(learner.unlabeled_indices),
-                'num_iterations': len(learner.training_history),
-                'current_accuracy': learner.training_history[-1]['accuracy'] if learner.training_history else 0.0,
-                'aulc_mAP':      learner.compute_aulc('mAP'),
-                'aulc_accuracy': learner.compute_aulc('accuracy'),
-                'aulc_f1_score': learner.compute_aulc('f1_score'),
-                'learning_rate': learner.learning_rate,
-                'model_name': learner.model_name
+                "name": name,
+                "n_labeled": len(learner.labeled_indices),
+                "n_unlabeled": len(learner.unlabeled_indices),
+                "num_iterations": len(learner.training_history),
+                "current_accuracy": (
+                    learner.training_history[-1]["accuracy"]
+                    if learner.training_history
+                    else 0.0
+                ),
+                "aulc_mAP": learner.compute_aulc("mAP"),
+                "aulc_accuracy": learner.compute_aulc("accuracy"),
+                "aulc_f1_score": learner.compute_aulc("f1_score"),
+                "learning_rate": learner.learning_rate,
+                "model_name": learner.model_name,
             }
-            summary['experiments'].append(exp_summary)
+            summary["experiments"].append(exp_summary)
 
         return summary
+
 
 class ActiveLearner:
     """
@@ -390,7 +410,7 @@ class ActiveLearner:
         mc_dropout_passes: int = 1,
         verbose: bool = True,
         metadata_path: Optional[Path] = None,
-        warmup_method: str = "density"
+        warmup_method: str = "density",
     ):
         """
         Initialize active learner
@@ -429,7 +449,7 @@ class ActiveLearner:
         self.dataset_name = dataset_name
         self.learning_rate = learning_rate
         self.device = device
-        self.repeats = repeats # TODO: potentially adjust for MC
+        self.repeats = repeats  # TODO: potentially adjust for MC
         self.pretrain_samples = pretrain_samples or 0
         self.warmup_method = warmup_method
         # Model dropout for MC
@@ -444,13 +464,13 @@ class ActiveLearner:
         self.idx = None
 
         self.umap_config = {
-                "n_neighbors": 30,
-                "min_dist": 0.1,
-                "n_components": 3,
-                "n_epochs": 200,
-                "init": "spectral",
-                "n_jobs": 1
-            }
+            "n_neighbors": 30,
+            "min_dist": 0.1,
+            "n_components": 3,
+            "n_epochs": 200,
+            "init": "spectral",
+            "n_jobs": 1,
+        }
 
         # Load data
         # import sys
@@ -458,7 +478,14 @@ class ActiveLearner:
         # print("ACTIVE LEARNER INIT CALLED", file=sys.stderr)
         # print("="*50, file=sys.stderr)
         # sys.stderr.flush()
-        self.embeddings, self.labels, self.label_to_idx, self.idx_to_label, self.annotations_df, _val_mask = self._load_data()
+        (
+            self.embeddings,
+            self.labels,
+            self.label_to_idx,
+            self.idx_to_label,
+            self.annotations_df,
+            _val_mask,
+        ) = self._load_data()
 
         # Load label-free metadata for the sampling interface (optional).
         # Aligned to self.annotations_df on 'filename' so row i in metadata_df
@@ -466,25 +493,31 @@ class ActiveLearner:
         if metadata_path is not None:
             meta_df = pd.read_csv(metadata_path)
             self.metadata_df = (
-                self.annotations_df[['filename']]
-                .merge(meta_df, on='filename', how='left')
+                self.annotations_df[["filename"]]
+                .merge(meta_df, on="filename", how="left")
                 .reset_index(drop=True)
             )
-            logger.info(f"Loaded metadata from {metadata_path} ({len(self.metadata_df)} rows, "
-                        f"columns: {list(self.metadata_df.columns)})")
+            logger.info(
+                f"Loaded metadata from {metadata_path} ({len(self.metadata_df)} rows, "
+                f"columns: {list(self.metadata_df.columns)})"
+            )
         else:
             self.metadata_df = None
 
         # Build validation index set (these are never sampled or trained on)
         self.validation_indices: set = set(np.where(_val_mask.values)[0].tolist())
         if self.validation_indices:
-            logger.info(f"Holding out {len(self.validation_indices)} validation samples from the AL pool")
+            logger.info(
+                f"Holding out {len(self.validation_indices)} validation samples from the AL pool"
+            )
 
         # Detect if dataset is multilabel based on label shape
         # Single-label: (n_samples,) with dtype int64
         # Multilabel: (n_samples, num_classes) with dtype float32
         self.is_multilabel = len(self.labels.shape) == 2
-        logger.info(f"Dataset mode: {'MULTILABEL' if self.is_multilabel else 'SINGLE-LABEL'}")
+        logger.info(
+            f"Dataset mode: {'MULTILABEL' if self.is_multilabel else 'SINGLE-LABEL'}"
+        )
 
         # Initialize model
         input_dim = self.embeddings.shape[1]
@@ -493,7 +526,7 @@ class ActiveLearner:
             input_dim=input_dim,
             hidden_dim=hidden_dim,
             num_classes=num_classes,
-            dropout_rate=dropout_rate
+            dropout_rate=dropout_rate,
         ).to(self.device)
 
         # Optimizer
@@ -509,16 +542,28 @@ class ActiveLearner:
             self.criterion = nn.CrossEntropyLoss()
             logger.info("Using CrossEntropyLoss for single-label classification")
 
-        self.sampling_strategy = SamplingStrategy(method=sampling_strategy, n_samples=n_samples_per_iteration)
-        logger.info(f"Initialized '{sampling_strategy}' sampling strategy with n_samples={n_samples_per_iteration}")
-        self.warmup_strategy = WarmupStrategy(method=warmup_strategy, n_samples=self.pretrain_samples, num_classes=num_classes)
-        logger.info(f"Initialized '{warmup_strategy}' warmup strategy with n_samples={self.pretrain_samples}")
+        self.sampling_strategy = SamplingStrategy(
+            method=sampling_strategy, n_samples=n_samples_per_iteration
+        )
+        logger.info(
+            f"Initialized '{sampling_strategy}' sampling strategy with n_samples={n_samples_per_iteration}"
+        )
+        self.warmup_strategy = WarmupStrategy(
+            method=warmup_strategy,
+            n_samples=self.pretrain_samples,
+            num_classes=num_classes,
+        )
+        logger.info(
+            f"Initialized '{warmup_strategy}' warmup strategy with n_samples={self.pretrain_samples}"
+        )
         self.warmup_epochs = warmup_epochs
         self.warmup_batch_size = warmup_batch_size
 
         # Active learning state (validation indices are excluded from both pools)
         self.labeled_indices = set()
-        self.unlabeled_indices = set(range(len(self.embeddings))) - self.validation_indices
+        self.unlabeled_indices = (
+            set(range(len(self.embeddings))) - self.validation_indices
+        )
         self.training_history = []
 
         # Pending per-cycle supplementary metrics (populated by sample() / add_samples())
@@ -538,9 +583,13 @@ class ActiveLearner:
         # Pre-training warm-up: select high-density samples if specified
         if pretrain_samples is not None and pretrain_samples > 0:
             self._pretrain_warmup(pretrain_samples)
-            logger.info(f"Pre-training warm-up: selected {len(self.labeled_indices)} high-density samples")
+            logger.info(
+                f"Pre-training warm-up: selected {len(self.labeled_indices)} high-density samples"
+            )
 
-        logger.info(f"Initialised ActiveLearner with {len(self.embeddings)} samples and {num_classes} classes")
+        logger.info(
+            f"Initialised ActiveLearner with {len(self.embeddings)} samples and {num_classes} classes"
+        )
 
     def _load_data(self) -> Tuple[np.ndarray, np.ndarray, Dict, Dict, pd.DataFrame]:
         """
@@ -563,9 +612,9 @@ class ActiveLearner:
         logger.info(f"Loaded {len(df)} annotations")
 
         # --- Detect multilabel and build label mappings (vectorized) -----------
-        label_column = 'label'
+        label_column = "label"
         label_strings = df[label_column].astype(str)
-        is_multilabel = label_strings.str.contains(';').any()
+        is_multilabel = label_strings.str.contains(";").any()
 
         if is_multilabel:
             logger.info("Detected MULTILABEL format (semicolon-separated labels)")
@@ -574,7 +623,7 @@ class ActiveLearner:
 
         # Extract all unique labels using vectorized split
         all_labels: set = set()
-        for lbl in label_strings.str.split(';').explode().str.strip().unique():
+        for lbl in label_strings.str.split(";").explode().str.strip().unique():
             all_labels.add(lbl)
 
         unique_labels = sorted(all_labels)
@@ -586,8 +635,8 @@ class ActiveLearner:
 
         # --- Build embedding filenames and filter to existing files -----------
         # Construct expected embedding path for every annotation row
-        stems = df['filename'].apply(lambda f: Path(f).stem)
-        embedding_names = stems + f".npy" # NOTE: _{self.model_name}
+        stems = df["filename"].apply(lambda f: Path(f).stem)
+        embedding_names = stems + f".npy"  # NOTE: _{self.model_name}
 
         # Single directory listing instead of N individual Path.exists() calls
         existing_files = set(p.name for p in self.embeddings_dir.iterdir())
@@ -596,13 +645,15 @@ class ActiveLearner:
         # If no exact matches, try suffix matching (embedding files may have a deployment prefix
         # separated by '__', e.g. "deployment__<stem>_<model>.npy")
         if not exists_mask.any():
-            suffix_map = {f.split('__', 1)[-1]: f for f in existing_files}
+            suffix_map = {f.split("__", 1)[-1]: f for f in existing_files}
             exists_mask = embedding_names.isin(suffix_map)
             embedding_names = embedding_names.map(lambda n: suffix_map.get(n, n))
 
         n_missing = (~exists_mask).sum()
         if n_missing > 0:
-            logger.warning(f"{n_missing} annotation rows have no matching embedding file -- skipped")
+            logger.warning(
+                f"{n_missing} annotation rows have no matching embedding file -- skipped"
+            )
 
         # Filter to matched rows only
         df_matched = df[exists_mask].reset_index(drop=True)
@@ -621,22 +672,26 @@ class ActiveLearner:
         filenames_list = list(embedding_names_matched)
         cache_hit = False
         if manifest_path.exists():
-            with open(manifest_path, 'r') as f:
+            with open(manifest_path, "r") as f:
                 manifest = json.load(f)
             if manifest.get("filenames") == filenames_list:
-                embeddings = np.load(str(cache_path), mmap_mode='r')
+                embeddings = np.load(str(cache_path), mmap_mode="r")
                 cache_hit = True
                 logger.info(f"Loaded cached embeddings: {embeddings.shape}")
 
         if not cache_hit:
             # Load individual files (slow for large datasets)
-            embedding_paths = [self.embeddings_dir / name for name in embedding_names_matched]
+            embedding_paths = [
+                self.embeddings_dir / name for name in embedding_names_matched
+            ]
 
             sample_emb = np.load(embedding_paths[0])
             if sample_emb.ndim == 1:
                 emb_dim = sample_emb.shape[0]
             else:
-                emb_dim = sample_emb.shape[1] if len(sample_emb) == 1 else sample_emb.size
+                emb_dim = (
+                    sample_emb.shape[1] if len(sample_emb) == 1 else sample_emb.size
+                )
 
             embeddings = np.empty((n_matched, emb_dim), dtype=np.float32)
 
@@ -650,7 +705,9 @@ class ActiveLearner:
             if sample_emb.ndim == 1:
                 embeddings[0] = sample_emb
             else:
-                embeddings[0] = sample_emb[0] if len(sample_emb) == 1 else sample_emb.flatten()
+                embeddings[0] = (
+                    sample_emb[0] if len(sample_emb) == 1 else sample_emb.flatten()
+                )
 
             if n_matched > 1:
                 max_workers = min(8, n_matched - 1)
@@ -660,7 +717,7 @@ class ActiveLearner:
             # Save consolidated cache for fast future loads
             cache_dir.mkdir(exist_ok=True)
             np.save(str(cache_path), embeddings)
-            with open(manifest_path, 'w') as f:
+            with open(manifest_path, "w") as f:
                 json.dump({"filenames": filenames_list}, f)
             logger.info(f"Saved embedding cache to {cache_dir}")
 
@@ -669,7 +726,7 @@ class ActiveLearner:
             # Multilabel: build binary matrix
             labels = np.zeros((n_matched, num_classes), dtype=np.float32)
             for i, lbl_str in enumerate(label_strings_matched):
-                for lbl in lbl_str.split(';'):
+                for lbl in lbl_str.split(";"):
                     lbl = lbl.strip()
                     if lbl in label_to_idx:
                         labels[i, label_to_idx[lbl]] = 1.0
@@ -677,27 +734,45 @@ class ActiveLearner:
             logger.info(f"Labels shape: {labels.shape} (multilabel binary vectors)")
         else:
             # Single-label: vectorized map to integer indices
-            labels = np.array([label_to_idx[s] for s in label_strings_matched], dtype=np.int64)
+            labels = np.array(
+                [label_to_idx[s] for s in label_strings_matched], dtype=np.int64
+            )
             logger.info(f"Loaded {n_matched} embeddings with shape {embeddings.shape}")
             logger.info(f"Labels shape: {labels.shape} (single-label indices)")
 
         annotations_df = df_matched
 
         # --- Build validation mask --------------------------------------------
-        if 'validation' in annotations_df.columns:
-            validation_mask = annotations_df['validation'].astype(str).str.lower().isin(['true', '1', 'yes'])
+        if "validation" in annotations_df.columns:
+            validation_mask = (
+                annotations_df["validation"]
+                .astype(str)
+                .str.lower()
+                .isin(["true", "1", "yes"])
+            )
             n_val = validation_mask.sum()
-            logger.info(f"Validation column detected: {n_val} validation samples, "
-                        f"{len(annotations_df) - n_val} training/unlabeled samples")
+            logger.info(
+                f"Validation column detected: {n_val} validation samples, "
+                f"{len(annotations_df) - n_val} training/unlabeled samples"
+            )
         else:
             validation_mask = pd.Series(False, index=annotations_df.index)
-            logger.info("No validation column found -- all samples treated as unlabeled")
+            logger.info(
+                "No validation column found -- all samples treated as unlabeled"
+            )
 
         logger.info(f"Annotations DataFrame shape: {annotations_df.shape}")
 
-        return embeddings, labels, label_to_idx, idx_to_label, annotations_df, validation_mask
+        return (
+            embeddings,
+            labels,
+            label_to_idx,
+            idx_to_label,
+            annotations_df,
+            validation_mask,
+        )
 
-    def _pretrain_warmup(self, n_samples: int, method = "density"):
+    def _pretrain_warmup(self, n_samples: int, method="density"):
         """
         Pre-training warm-up: select initial samples, train on them, and record
         a cycle-0 entry in training_history with real evaluation metrics.
@@ -705,9 +780,13 @@ class ActiveLearner:
         Args:
             n_samples: Number of samples to pre-select
         """
-        candidate_indices = np.array(sorted(set(range(len(self.embeddings))) - self.validation_indices))
+        candidate_indices = np.array(
+            sorted(set(range(len(self.embeddings))) - self.validation_indices)
+        )
 
-        logger.info(f"Running '{self.warmup_strategy.method}' warmup for {len(candidate_indices)} candidates...")
+        logger.info(
+            f"Running '{self.warmup_strategy.method}' warmup for {len(candidate_indices)} candidates..."
+        )
 
         _t0 = time.perf_counter()
         selected = self.warmup_strategy.select(candidate_indices, self.embeddings)
@@ -718,7 +797,9 @@ class ActiveLearner:
 
         # Credit annotation cost so train_step records it in the history entry
         if self.is_multilabel:
-            self._pending_annotation_cost = int(self.labels[list(self.labeled_indices)].sum())
+            self._pending_annotation_cost = int(
+                self.labels[list(self.labeled_indices)].sum()
+            )
         else:
             self._pending_annotation_cost = len(self.labeled_indices)
 
@@ -727,10 +808,12 @@ class ActiveLearner:
 
         # Mark the appended entry as warmup
         if self.training_history:
-            self.training_history[-1]['warmup'] = True
+            self.training_history[-1]["warmup"] = True
 
-        mAP = self.training_history[-1]['mAP'] if self.training_history else 0.0
-        logger.info(f"Pre-training warm-up complete: {len(self.labeled_indices)} samples, mAP={mAP:.4f}")
+        mAP = self.training_history[-1]["mAP"] if self.training_history else 0.0
+        logger.info(
+            f"Pre-training warm-up complete: {len(self.labeled_indices)} samples, mAP={mAP:.4f}"
+        )
         logger.info(f"Remaining unlabeled samples: {len(self.unlabeled_indices)}")
 
     def _predict_all(self) -> np.ndarray:
@@ -749,12 +832,18 @@ class ActiveLearner:
             chunks = []
             with torch.no_grad():
                 for start in range(0, n, bs):
-                    batch = torch.from_numpy(self.embeddings[start:start + bs]).to(self.device)
+                    batch = torch.from_numpy(self.embeddings[start : start + bs]).to(
+                        self.device
+                    )
                     out = self.model(batch)
-                    probs = torch.sigmoid(out) if self.is_multilabel else torch.softmax(out, dim=1)
+                    probs = (
+                        torch.sigmoid(out)
+                        if self.is_multilabel
+                        else torch.softmax(out, dim=1)
+                    )
                     chunks.append(probs.cpu().numpy())
             return np.concatenate(chunks, axis=0)
-        
+
         else:
             # mc_dropout_passes > 1 then compute multiple forward passes
             all_passes = []
@@ -763,13 +852,21 @@ class ActiveLearner:
                 for _ in range(self.mc_dropout_passes):
                     chunks = []
                     for start in range(0, n, bs):
-                        batch = torch.from_numpy(self.embeddings[start:start + bs]).to(self.device)
+                        batch = torch.from_numpy(
+                            self.embeddings[start : start + bs]
+                        ).to(self.device)
                         out = self.model(batch)
-                        probs = torch.sigmoid(out) if self.is_multilabel else torch.softmax(out, dim=1)
+                        probs = (
+                            torch.sigmoid(out)
+                            if self.is_multilabel
+                            else torch.softmax(out, dim=1)
+                        )
                         chunks.append(probs.cpu().numpy())
                     all_passes.append(np.concatenate(chunks, axis=0))
             self.model.eval()
-            return np.stack(all_passes, axis=0) # shape: (mc_dropout_passes, n_samples, n_classes)
+            return np.stack(
+                all_passes, axis=0
+            )  # shape: (mc_dropout_passes, n_samples, n_classes)
 
     def sample(self, n_samples: Optional[int] = None) -> List[int]:
         """
@@ -795,7 +892,7 @@ class ActiveLearner:
         predictions = self._predict_all()
 
         if self.mc_dropout_passes > 1:
-            mean_predictions = predictions.mean(axis=0) # (n_samples, n_classes)
+            mean_predictions = predictions.mean(axis=0)  # (n_samples, n_classes)
         else:
             mean_predictions = predictions
 
@@ -820,13 +917,17 @@ class ActiveLearner:
             metadata=self.metadata_df,
             labeled_indices=labeled_list,
             labels=labeled_labels,
-            mc_predictions=predictions if self.mc_dropout_passes > 1 else None
+            mc_predictions=predictions if self.mc_dropout_passes > 1 else None,
         )
         self._pending_sampling_time += time.perf_counter() - _t0
 
         # Debug: Check uncertainty values from sampling strategy
-        logger.info(f"Unlabeled uncertainties - min: {unlabeled_uncertainties.min():.4f}, max: {unlabeled_uncertainties.max():.4f}, mean: {unlabeled_uncertainties.mean():.4f}")
-        logger.info(f"Unlabeled uncertainties shape: {unlabeled_uncertainties.shape}, expected: {len(self.unlabeled_indices)}")
+        logger.info(
+            f"Unlabeled uncertainties - min: {unlabeled_uncertainties.min():.4f}, max: {unlabeled_uncertainties.max():.4f}, mean: {unlabeled_uncertainties.mean():.4f}"
+        )
+        logger.info(
+            f"Unlabeled uncertainties shape: {unlabeled_uncertainties.shape}, expected: {len(self.unlabeled_indices)}"
+        )
 
         # Update uncertainties array for all samples
         # Labeled samples have uncertainty = 0
@@ -835,14 +936,20 @@ class ActiveLearner:
         self.uncertainties[unlabeled_list] = unlabeled_uncertainties
 
         # Debug: Check final uncertainties
-        logger.info(f"Final uncertainties - min: {self.uncertainties.min():.4f}, max: {self.uncertainties.max():.4f}")
-        logger.info(f"Non-zero uncertainties: {np.count_nonzero(self.uncertainties)} out of {len(self.uncertainties)}")
+        logger.info(
+            f"Final uncertainties - min: {self.uncertainties.min():.4f}, max: {self.uncertainties.max():.4f}"
+        )
+        logger.info(
+            f"Non-zero uncertainties: {np.count_nonzero(self.uncertainties)} out of {len(self.uncertainties)}"
+        )
 
         # Restore original n_samples if it was overridden
         if n_samples is not None:
             self.sampling_strategy.n_samples = original_n
 
-        logger.info(f"Selected {len(selected)} samples using {self.sampling_strategy.__class__.__name__}")
+        logger.info(
+            f"Selected {len(selected)} samples using {self.sampling_strategy.__class__.__name__}"
+        )
         return selected
 
     def add_samples(self, indices: List[int]):
@@ -864,10 +971,17 @@ class ActiveLearner:
         else:
             self._pending_annotation_cost += len(moved)
 
-        logger.info(f"Added {len(indices)} samples. Labeled: {len(self.labeled_indices)}, Unlabeled: {len(self.unlabeled_indices)}")
+        logger.info(
+            f"Added {len(indices)} samples. Labeled: {len(self.labeled_indices)}, Unlabeled: {len(self.unlabeled_indices)}"
+        )
 
-    def _calculate_calibration_metrics(self, probabilities: np.ndarray, predicted: np.ndarray,
-                                       labels: np.ndarray, n_bins: int = 10) -> Dict:
+    def _calculate_calibration_metrics(
+        self,
+        probabilities: np.ndarray,
+        predicted: np.ndarray,
+        labels: np.ndarray,
+        n_bins: int = 10,
+    ) -> Dict:
         """
         Calculate calibration metrics for reliability plot
 
@@ -918,11 +1032,11 @@ class ActiveLearner:
                 bin_counts.append(0)
 
         return {
-            'bin_confidences': bin_confidences,
-            'bin_accuracies': bin_accuracies,
-            'bin_counts': bin_counts,
-            'ece': float(ece),
-            'n_bins': n_bins
+            "bin_confidences": bin_confidences,
+            "bin_accuracies": bin_accuracies,
+            "bin_counts": bin_counts,
+            "ece": float(ece),
+            "n_bins": n_bins,
         }
 
     def train_step(self, epochs: int = 5, batch_size: int = 32) -> Dict:
@@ -940,8 +1054,14 @@ class ActiveLearner:
         if len(self.labeled_indices) == 0:
             logger.warning("No labeled samples to train on")
             return {
-                "loss": 0.0, "accuracy": 0.0, "f1_score": 0.0, "mAP": 0.0,
-                "loss_sd": 0.0, "accuracy_sd": 0.0, "f1_score_sd": 0.0, "mAP_sd": 0.0
+                "loss": 0.0,
+                "accuracy": 0.0,
+                "f1_score": 0.0,
+                "mAP": 0.0,
+                "loss_sd": 0.0,
+                "accuracy_sd": 0.0,
+                "f1_score_sd": 0.0,
+                "mAP_sd": 0.0,
             }
 
         # Store original model state for repeats
@@ -965,7 +1085,9 @@ class ActiveLearner:
 
             # Prepare labeled data (convert set to sorted list for numpy indexing)
             labeled_list = sorted(self.labeled_indices)
-            X_train_orig = torch.from_numpy(self.embeddings[labeled_list]).to(self.device)
+            X_train_orig = torch.from_numpy(self.embeddings[labeled_list]).to(
+                self.device
+            )
             y_train_orig = torch.from_numpy(self.labels[labeled_list]).to(self.device)
 
             # Training loop
@@ -982,8 +1104,8 @@ class ActiveLearner:
 
                 # Mini-batch training
                 for i in range(0, len(X_train_orig), batch_size):
-                    batch_X = X_train_shuffled[i:i + batch_size]
-                    batch_y = y_train_shuffled[i:i + batch_size]
+                    batch_X = X_train_shuffled[i : i + batch_size]
+                    batch_y = y_train_shuffled[i : i + batch_size]
 
                     # Forward pass
                     self.optimizer.zero_grad()
@@ -1009,7 +1131,7 @@ class ActiveLearner:
             num_classes = len(self.label_to_idx)
 
             if self.mc_dropout_passes > 1:
-                probabilities = probabilities.mean(axis=0) # (n_samples, n_classes)
+                probabilities = probabilities.mean(axis=0)  # (n_samples, n_classes)
 
             if self.validation_indices:
                 eval_indices = sorted(self.validation_indices)
@@ -1030,16 +1152,17 @@ class ActiveLearner:
                 accuracy = exact_match.mean()
 
                 # Calculate F1 score (samples average for multilabel)
-                f1 = f1_score(labels_np, predicted_np, average='macro', zero_division=0)
+                f1 = f1_score(labels_np, predicted_np, average="macro", zero_division=0)
 
                 # Calculate mAP (mean Average Precision) for multilabel
                 try:
                     aps = []
                     for class_idx in range(num_classes):
-                        if labels_np[:, class_idx].sum() > 0:  # Only if class has samples
+                        if (
+                            labels_np[:, class_idx].sum() > 0
+                        ):  # Only if class has samples
                             ap = average_precision_score(
-                                labels_np[:, class_idx],
-                                eval_probs[:, class_idx]
+                                labels_np[:, class_idx], eval_probs[:, class_idx]
                             )
                             aps.append(ap)
                     mAP = np.mean(aps) if len(aps) > 0 else 0.0
@@ -1065,9 +1188,13 @@ class ActiveLearner:
 
                 # Calculate F1 score (macro average)
                 if num_classes > 2:
-                    f1 = f1_score(labels_np, predicted_np, average='macro', zero_division=0)
+                    f1 = f1_score(
+                        labels_np, predicted_np, average="macro", zero_division=0
+                    )
                 else:
-                    f1 = f1_score(labels_np, predicted_np, average='binary', zero_division=0)
+                    f1 = f1_score(
+                        labels_np, predicted_np, average="binary", zero_division=0
+                    )
 
                 # Calculate mAP (mean Average Precision)
                 # For multiclass, we use one-vs-rest approach
@@ -1079,10 +1206,11 @@ class ActiveLearner:
                     # Calculate average precision for each class
                     aps = []
                     for class_idx in range(num_classes):
-                        if labels_onehot[:, class_idx].sum() > 0:  # Only if class has samples
+                        if (
+                            labels_onehot[:, class_idx].sum() > 0
+                        ):  # Only if class has samples
                             ap = average_precision_score(
-                                labels_onehot[:, class_idx],
-                                eval_probs[:, class_idx]
+                                labels_onehot[:, class_idx], eval_probs[:, class_idx]
                             )
                             aps.append(ap)
 
@@ -1103,8 +1231,10 @@ class ActiveLearner:
             all_f1_scores.append(f1)
             all_mAPs.append(mAP)
 
-            logger.info(f"Repeat {repeat_idx + 1}/{self.repeats} - Loss: {avg_loss:.4f}, "
-                       f"Acc: {accuracy:.4f}, F1: {f1:.4f}, mAP: {mAP:.4f}")
+            logger.info(
+                f"Repeat {repeat_idx + 1}/{self.repeats} - Loss: {avg_loss:.4f}, "
+                f"Acc: {accuracy:.4f}, F1: {f1:.4f}, mAP: {mAP:.4f}"
+            )
 
         # After all repeats, restore the model from the last training run
         # (the model is already in the state from the last repeat)
@@ -1126,7 +1256,7 @@ class ActiveLearner:
             "batch_size": batch_size,
             "sampling_time_s": round(self._pending_sampling_time, 6),
             "annotation_cost": self._pending_annotation_cost,
-            "calibration": calibration_data  # Add calibration data from last repeat
+            "calibration": calibration_data,  # Add calibration data from last repeat
         }
 
         # Reset pending supplementary metrics for next cycle
@@ -1136,27 +1266,31 @@ class ActiveLearner:
         self.training_history.append(metrics)
 
         # Compute running AULC for all three performance metrics
-        aulc_mAP      = self.compute_aulc('mAP')
-        aulc_accuracy = self.compute_aulc('accuracy')
-        aulc_f1       = self.compute_aulc('f1_score')
-        metrics['aulc_mAP']      = aulc_mAP
-        metrics['aulc_accuracy'] = aulc_accuracy
-        metrics['aulc_f1_score'] = aulc_f1
-        self.training_history[-1].update({
-            'aulc_mAP':      aulc_mAP,
-            'aulc_accuracy': aulc_accuracy,
-            'aulc_f1_score': aulc_f1,
-        })
+        aulc_mAP = self.compute_aulc("mAP")
+        aulc_accuracy = self.compute_aulc("accuracy")
+        aulc_f1 = self.compute_aulc("f1_score")
+        metrics["aulc_mAP"] = aulc_mAP
+        metrics["aulc_accuracy"] = aulc_accuracy
+        metrics["aulc_f1_score"] = aulc_f1
+        self.training_history[-1].update(
+            {
+                "aulc_mAP": aulc_mAP,
+                "aulc_accuracy": aulc_accuracy,
+                "aulc_f1_score": aulc_f1,
+            }
+        )
 
-        logger.info(f"Training step complete: Loss={metrics['loss']:.4f}+-{metrics['loss_sd']:.4f}, "
-                   f"Acc={metrics['accuracy']:.4f}+-{metrics['accuracy_sd']:.4f}, "
-                   f"F1={metrics['f1_score']:.4f}+-{metrics['f1_score_sd']:.4f}, "
-                   f"mAP={metrics['mAP']:.4f}+-{metrics['mAP_sd']:.4f}, "
-                   f"AULC(mAP)={aulc_mAP:.4f}")
+        logger.info(
+            f"Training step complete: Loss={metrics['loss']:.4f}+-{metrics['loss_sd']:.4f}, "
+            f"Acc={metrics['accuracy']:.4f}+-{metrics['accuracy_sd']:.4f}, "
+            f"F1={metrics['f1_score']:.4f}+-{metrics['f1_score_sd']:.4f}, "
+            f"mAP={metrics['mAP']:.4f}+-{metrics['mAP_sd']:.4f}, "
+            f"AULC(mAP)={aulc_mAP:.4f}"
+        )
 
         return metrics
 
-    def compute_aulc(self, metric: str = 'mAP') -> float:
+    def compute_aulc(self, metric: str = "mAP") -> float:
         """
         Compute the Area Under the Learning Curve (AULC) from the current training
         history using the trapezoidal rule, normalised by the x-axis range so the
@@ -1173,17 +1307,20 @@ class ActiveLearner:
         if len(self.training_history) < 1:
             return 0.0
         # Prepend a (0, 0) anchor so cycle 1 yields a non-zero area.
-        n_labeled = [0] + [entry['n_labeled'] for entry in self.training_history]
-        values    = [0.0] + [entry[metric]    for entry in self.training_history]
-        x_range   = n_labeled[-1] - n_labeled[0]
+        n_labeled = [0] + [entry["n_labeled"] for entry in self.training_history]
+        values = [0.0] + [entry[metric] for entry in self.training_history]
+        x_range = n_labeled[-1] - n_labeled[0]
         if x_range == 0:
             return 0.0
         return float(np.trapz(values, n_labeled) / x_range)
 
-    def export(self, output_path: str,
-               author_lastname: Optional[str] = None,
-               institute_abbreviation: Optional[str] = None,
-               max_budget: Optional[int] = None) -> None:
+    def export(
+        self,
+        output_path: str,
+        author_lastname: Optional[str] = None,
+        institute_abbreviation: Optional[str] = None,
+        max_budget: Optional[int] = None,
+    ) -> None:
         """
         Export the submission YAML file for the BioDCASE challenge.
 
@@ -1206,7 +1343,7 @@ class ActiveLearner:
                         max_budget // BASELINE_BATCH_SIZE (32), giving a fair
                         cost comparison. Falls back to actual n_cycles if None.
         """
-        _STRIP = {'calibration', 'loss', 'loss_sd', 'n_unlabeled', 'repeats'}
+        _STRIP = {"calibration", "loss", "loss_sd", "n_unlabeled", "repeats"}
 
         model_parameters = int(sum(p.numel() for p in self.model.parameters()))
 
@@ -1214,70 +1351,89 @@ class ActiveLearner:
         learning_curve = []
         cycle_counter = 0
         for entry in self.training_history:
-            is_warmup = entry.get('warmup', False)
+            is_warmup = entry.get("warmup", False)
             if is_warmup:
-                row = {'cycle': 0, 'warmup': True}
+                row = {"cycle": 0, "warmup": True}
             else:
                 cycle_counter += 1
-                row = {'cycle': cycle_counter}
+                row = {"cycle": cycle_counter}
             for k, v in entry.items():
-                if k not in _STRIP and k != 'warmup':
+                if k not in _STRIP and k != "warmup":
                     row[k] = round(v, 6) if isinstance(v, float) else v
             learning_curve.append(row)
 
         # Supplementary aggregates
-        total_sampling_time  = round(sum(e.get('sampling_time_s', 0.0) for e in self.training_history), 6)
-        total_annotation_cost = int(sum(e.get('annotation_cost', 0) for e in self.training_history))
+        total_sampling_time = round(
+            sum(e.get("sampling_time_s", 0.0) for e in self.training_history), 6
+        )
+        total_annotation_cost = int(
+            sum(e.get("annotation_cost", 0) for e in self.training_history)
+        )
         n_cycles = len(self.training_history)
         # Use epochs from the last cycle (consistent across cycles for the baseline)
         last = self.training_history[-1] if self.training_history else {}
-        epochs_per_cycle = last.get('epochs', None)
+        epochs_per_cycle = last.get("epochs", None)
 
         # Baseline config (fixed): 50 samples/cycle x 10 cycles = 500 samples, 10 epochs/cycle.
-        _BASELINE_EPOCHS  = 10
-        _BASELINE_CYCLES  = 10
+        _BASELINE_EPOCHS = 10
+        _BASELINE_CYCLES = 10
         baseline_n_cycles = _BASELINE_CYCLES
-        cost_method   = (model_parameters * epochs_per_cycle * n_cycles
-                         if epochs_per_cycle is not None else None)
+        cost_method = (
+            model_parameters * epochs_per_cycle * n_cycles
+            if epochs_per_cycle is not None
+            else None
+        )
         baseline_cost = model_parameters * _BASELINE_EPOCHS * baseline_n_cycles
-        relative_cost = (round(cost_method / baseline_cost, 4)
-                         if (cost_method is not None and baseline_cost > 0) else None)
+        relative_cost = (
+            round(cost_method / baseline_cost, 4)
+            if (cost_method is not None and baseline_cost > 0)
+            else None
+        )
 
         submission = {
-            'submission_timestamp': datetime.now().isoformat(timespec='seconds'),
-            'author_lastname': author_lastname,
-            'institute_abbreviation': institute_abbreviation,
-            'sampling_strategy': self.sampling_strategy.method
-                if hasattr(self.sampling_strategy, 'method') else str(self.sampling_strategy),
-            'dataset': self.dataset_name,
-            'model': self.model_name,
-            'config': {
-                'learning_rate': self.learning_rate,
-                'model_parameters': model_parameters,
-                'repeats': self.repeats,
-                'pretrain_samples': self.pretrain_samples,
-                'warmup_strategy': self.warmup_strategy.method,
+            "submission_timestamp": datetime.now().isoformat(timespec="seconds"),
+            "author_lastname": author_lastname,
+            "institute_abbreviation": institute_abbreviation,
+            "sampling_strategy": (
+                self.sampling_strategy.method
+                if hasattr(self.sampling_strategy, "method")
+                else str(self.sampling_strategy)
+            ),
+            "dataset": self.dataset_name,
+            "model": self.model_name,
+            "config": {
+                "learning_rate": self.learning_rate,
+                "model_parameters": model_parameters,
+                "repeats": self.repeats,
+                "pretrain_samples": self.pretrain_samples,
+                "warmup_strategy": self.warmup_strategy.method,
             },
-            'learning_curve': learning_curve,
-            'supplementary': {
-                'n_cycles': n_cycles,
-                'total_sampling_time_s': total_sampling_time,
-                'total_annotation_cost': total_annotation_cost,
-                'computational_cost': {
-                    'model_parameters': model_parameters,
-                    'epochs_per_cycle': epochs_per_cycle,
-                    'n_cycles': n_cycles,
-                    'cost_method': cost_method,
-                    'baseline_n_cycles': baseline_n_cycles,
-                    'baseline_cost': baseline_cost,
-                    'relative_cost': relative_cost,
+            "learning_curve": learning_curve,
+            "supplementary": {
+                "n_cycles": n_cycles,
+                "total_sampling_time_s": total_sampling_time,
+                "total_annotation_cost": total_annotation_cost,
+                "computational_cost": {
+                    "model_parameters": model_parameters,
+                    "epochs_per_cycle": epochs_per_cycle,
+                    "n_cycles": n_cycles,
+                    "cost_method": cost_method,
+                    "baseline_n_cycles": baseline_n_cycles,
+                    "baseline_cost": baseline_cost,
+                    "relative_cost": relative_cost,
                 },
             },
         }
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w') as f:
-            yaml.dump(submission, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        with open(output_path, "w") as f:
+            yaml.dump(
+                submission,
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
 
         logger.info(f"Submission exported to {output_path}")
 
@@ -1297,7 +1453,9 @@ class ActiveLearner:
             return self.reducer.transform(embeddings_scaled)
 
         # Split into batches and transform
-        logger.info(f"Transforming {n_samples} samples in batches of {self.umap_transform_batch_size}")
+        logger.info(
+            f"Transforming {n_samples} samples in batches of {self.umap_transform_batch_size}"
+        )
 
         batches = []
         for start_idx in range(0, n_samples, self.umap_transform_batch_size):
@@ -1310,7 +1468,9 @@ class ActiveLearner:
             batches.append(batch_transformed)
             end = time.time()
 
-            logger.info(f"Transformed batch {start_idx//self.umap_transform_batch_size + 1}/{(n_samples-1)//self.umap_transform_batch_size + 1} ({end_idx}/{n_samples} samples in {end - start}s)")
+            logger.info(
+                f"Transformed batch {start_idx//self.umap_transform_batch_size + 1}/{(n_samples-1)//self.umap_transform_batch_size + 1} ({end_idx}/{n_samples} samples in {end - start}s)"
+            )
 
         # Combine all batches
         embeddings_3d = np.vstack(batches)
@@ -1345,7 +1505,9 @@ class ActiveLearner:
         norms = np.where(norms == 0, 1, norms)
         return embeddings_3d / norms
 
-    def _project_torus(self, embeddings_3d: np.ndarray, R: float = 3.0, r: float = 1.0) -> np.ndarray:
+    def _project_torus(
+        self, embeddings_3d: np.ndarray, R: float = 3.0, r: float = 1.0
+    ) -> np.ndarray:
         """
         Project points onto a torus surface
 
@@ -1381,7 +1543,9 @@ class ActiveLearner:
 
         return np.column_stack([x_torus, y_torus, z_torus])
 
-    def _project_hyperbolic(self, embeddings_3d: np.ndarray, scale: float = 0.9) -> np.ndarray:
+    def _project_hyperbolic(
+        self, embeddings_3d: np.ndarray, scale: float = 0.9
+    ) -> np.ndarray:
         """
         Project points into Poincare ball model of hyperbolic space
 
@@ -1407,10 +1571,12 @@ class ActiveLearner:
 
         return directions * radii
 
-    def get_embeddings_3d(self,
-                         reduction_method: str = "pca",
-                         max_embeddings: int = 1000,
-                         projection: str = "euclidean") -> np.ndarray:
+    def get_embeddings_3d(
+        self,
+        reduction_method: str = "pca",
+        max_embeddings: int = 1000,
+        projection: str = "euclidean",
+    ) -> np.ndarray:
         """
         Get 3D embeddings from the intermediate layer with geometric projection
 
@@ -1423,9 +1589,11 @@ class ActiveLearner:
             Array of shape (n_samples, 3) with 3D coordinates in the specified space
         """
         # Validate projection type
-        valid_projections = ['euclidean', 'spherical', 'torus', 'hyperbolic']
+        valid_projections = ["euclidean", "spherical", "torus", "hyperbolic"]
         if projection not in valid_projections:
-            raise ValueError(f"projection must be one of {valid_projections}, got '{projection}'")
+            raise ValueError(
+                f"projection must be one of {valid_projections}, got '{projection}'"
+            )
 
         self.model.eval()
 
@@ -1437,14 +1605,18 @@ class ActiveLearner:
         if embeddings.shape[0] > max_embeddings:
             if self.idx is None:
                 print("Generate subset...")
-                self.idx = np.random.choice(embeddings.shape[0], size=max_embeddings, replace=False)
+                self.idx = np.random.choice(
+                    embeddings.shape[0], size=max_embeddings, replace=False
+                )
 
             embeddings = embeddings[self.idx]
             print(f"Embeddings subsampled, new shape {embeddings.shape}")
 
         # Fit transformation on first call, then reuse
         if self.reducer is None or self.scaler is None:
-            logger.info(f"Fitting {self.dim_reduction_method} (will be reused for subsequent calls)")
+            logger.info(
+                f"Fitting {self.dim_reduction_method} (will be reused for subsequent calls)"
+            )
             self.scaler = StandardScaler()
             embeddings_scaled = self.scaler.fit_transform(embeddings)
 
@@ -1463,17 +1635,19 @@ class ActiveLearner:
             start = time.time()
             embeddings_3d = self.reducer.fit_transform(embeddings_scaled)
             end = time.time()
-            logger.info(f"Transformed {len(embeddings)} samples using {self.dim_reduction_method} in {end - start:.3f}s")
+            logger.info(
+                f"Transformed {len(embeddings)} samples using {self.dim_reduction_method} in {end - start:.3f}s"
+            )
 
         # Center the embeddings at the origin for better camera rotation
         embeddings_3d = embeddings_3d - embeddings_3d.mean(axis=0)
 
         # Apply geometric projection
         projection_funcs = {
-            'euclidean': self._project_euclidean,
-            'spherical': self._project_spherical,
-            'torus': self._project_torus,
-            'hyperbolic': self._project_hyperbolic
+            "euclidean": self._project_euclidean,
+            "spherical": self._project_spherical,
+            "torus": self._project_torus,
+            "hyperbolic": self._project_hyperbolic,
         }
 
         embeddings_3d = projection_funcs[projection](embeddings_3d)
@@ -1495,7 +1669,9 @@ class ActiveLearner:
             "unlabeled_indices": sorted(self.unlabeled_indices),
             "training_history": self.training_history,
             "num_classes": int(len(self.label_to_idx)),
-            "labels": list(self.label_to_idx.keys()),  # Already strings from initialization
+            "labels": list(
+                self.label_to_idx.keys()
+            ),  # Already strings from initialization
             "uncertainties": self.uncertainties.tolist(),  # Per-sample uncertainty scores [0, 1]
-            "is_multilabel": self.is_multilabel  # Whether dataset is multilabel or single-label
+            "is_multilabel": self.is_multilabel,  # Whether dataset is multilabel or single-label
         }

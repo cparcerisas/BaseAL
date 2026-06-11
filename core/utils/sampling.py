@@ -1,52 +1,64 @@
 """
 Sampling strategies for active learning
 """
-import numpy as np
-import pandas as pd
-from typing import List, Optional, Tuple
-from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
-from sklearn.neighbors import NearestNeighbors
+
 import logging
+from typing import List, Optional, Tuple
+
 # from skactiveml.pool import UncertaintySampling  # Not currently used in the code; temporarily commented out.
 import faiss
+import numpy as np
+import pandas as pd
+from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+from sklearn.neighbors import NearestNeighbors
 
 logger = logging.getLogger(__name__)
 
 
-def densityEstimation(embeddings: Optional[np.ndarray] = None, method='cosine', beta: int = 1, k: int = 20):
-    if method == 'cosine':
+def densityEstimation(
+    embeddings: Optional[np.ndarray] = None, method="cosine", beta: int = 1, k: int = 20
+):
+    if method == "cosine":
         similarity = cosine_similarity(embeddings)
-    elif method == 'euclidean':
+    elif method == "euclidean":
         similarity = euclidean_distances(embeddings)
-    elif method == 'knn':
+    elif method == "knn":
         knn = NearestNeighbors(n_neighbors=k).fit(embeddings)
         distance, _ = knn.kneighbors(embeddings)
         similarity = distance.T
     else:
         raise Exception("Unknown similarity estimation method, ")
 
-    density = np.power(np.sum(similarity, axis=0) / np.sum(similarity, axis=0).max(), beta)
+    density = np.power(
+        np.sum(similarity, axis=0) / np.sum(similarity, axis=0).max(), beta
+    )
     return density
 
 
-def KMeansEstimation(embeddings: Optional[np.ndarray] = None, num_classes: int = None, n_samples: int = 20, random_state: Optional[int] = None)-> np.ndarray:
+def KMeansEstimation(
+    embeddings: Optional[np.ndarray] = None,
+    num_classes: int = None,
+    n_samples: int = 20,
+    random_state: Optional[int] = None,
+) -> np.ndarray:
     from sklearn.cluster import KMeans
     from sklearn.preprocessing import normalize
 
-    use_umap = False 
+    use_umap = False
 
     # Normalise embeddings before clustering
-    embeddings_norm = normalize(embeddings, norm='l2')
+    embeddings_norm = normalize(embeddings, norm="l2")
 
     if use_umap:
         import umap
+
         reducer = umap.UMAP(n_components=2, random_state=random_state)
         embeddings_for_clustering = reducer.fit_transform(embeddings_norm)
         print("UMAP embeddings shape computed")
     else:
         embeddings_for_clustering = embeddings_norm
 
-    kmeans = KMeans(n_clusters=n_samples, random_state=random_state, n_init='auto')
+    kmeans = KMeans(n_clusters=n_samples, random_state=random_state, n_init="auto")
     kmeans.fit(embeddings_for_clustering)
 
     # For each centroid, pick the closest actual sample
@@ -71,23 +83,27 @@ def KMeansEstimation(embeddings: Optional[np.ndarray] = None, num_classes: int =
     return selected_local
 
 
-def uniformEmbeddingSampling(embeddings: Optional[np.ndarray] = None, n_samples: int = 20, random_state: Optional[int] = None)-> np.ndarray:
-    '''
-        Uniform sampling in embedding space: selects samples that are uniformly distributed in the embedding space.
+def uniformEmbeddingSampling(
+    embeddings: Optional[np.ndarray] = None,
+    n_samples: int = 20,
+    random_state: Optional[int] = None,
+) -> np.ndarray:
+    """
+    Uniform sampling in embedding space: selects samples that are uniformly distributed in the embedding space.
 
-        This implementation projects embeddings onto the two principal eigenvectors of the covariance
-        matrix, allocates the warmup budget between the two directions in proportion to their eigenvalues,
-        and samples roughly uniformly across quantile bins of each projection. The function returns a
-        utility array of shape (n_samples_total,) with 1.0 for selected items and 0.0 otherwise.
+    This implementation projects embeddings onto the two principal eigenvectors of the covariance
+    matrix, allocates the warmup budget between the two directions in proportion to their eigenvalues,
+    and samples roughly uniformly across quantile bins of each projection. The function returns a
+    utility array of shape (n_samples_total,) with 1.0 for selected items and 0.0 otherwise.
 
-        Args:
-            embeddings: Numpy array of shape (n_total, embedding_dim) containing the embeddings of the samples.
-            n_samples: Number of samples to select.
-            random_state: Optional random seed for reproducibility.
+    Args:
+        embeddings: Numpy array of shape (n_total, embedding_dim) containing the embeddings of the samples.
+        n_samples: Number of samples to select.
+        random_state: Optional random seed for reproducibility.
 
-        Returns:
-            utility: Array of utility scores for samples [0, 1] where 1 = selected samples, 0 = non-selected samples.
-    '''
+    Returns:
+        utility: Array of utility scores for samples [0, 1] where 1 = selected samples, 0 = non-selected samples.
+    """
     if embeddings is None:
         raise ValueError("embeddings must be provided for uniformEmbeddingSampling")
 
@@ -164,14 +180,18 @@ def uniformEmbeddingSampling(embeddings: Optional[np.ndarray] = None, n_samples:
 
     # trim if oversubscribed
     if len(selected) > n_samples:
-        selected = rng.choice(np.array(selected, dtype=int), size=n_samples, replace=False).tolist()
+        selected = rng.choice(
+            np.array(selected, dtype=int), size=n_samples, replace=False
+        ).tolist()
 
     utility = np.zeros(n, dtype=np.float32)
     utility[np.array(selected, dtype=int)] = 1.0
     return utility
 
 
-def _sample_pool(unlabeled: np.ndarray, pool_size: int, rng: np.random.Generator) -> np.ndarray:
+def _sample_pool(
+    unlabeled: np.ndarray, pool_size: int, rng: np.random.Generator
+) -> np.ndarray:
     if pool_size <= 0 or len(unlabeled) <= pool_size:
         return unlabeled
     return rng.choice(unlabeled, size=pool_size, replace=False)
@@ -185,7 +205,9 @@ def _build_hnsw_index(x: np.ndarray, m: int = 32, ef_search: int = 128) -> faiss
     return index
 
 
-def _project_with_pca(x: np.ndarray, out_dim: int, train_rows: int = 20000) -> np.ndarray:
+def _project_with_pca(
+    x: np.ndarray, out_dim: int, train_rows: int = 20000
+) -> np.ndarray:
     if out_dim <= 0 or out_dim >= x.shape[1]:
         return x
     n_train = min(train_rows, x.shape[0])
@@ -204,7 +226,12 @@ class SamplingStrategy:
     Data is stored as instance attributes and accessed by sampling methods.
     """
 
-    def __init__(self, method: str = "random", n_samples: int = 20, random_state: Optional[int] = None):
+    def __init__(
+        self,
+        method: str = "random",
+        n_samples: int = 20,
+        random_state: Optional[int] = None,
+    ):
         """
         Initialize sampling strategy
 
@@ -219,20 +246,20 @@ class SamplingStrategy:
 
         # Available sampling methods
         available_methods = [
-            'random',
-            'margin',
-            'custom',
-            'bald',
+            "random",
+            "margin",
+            "custom",
+            "bald",
             # 'margin_multilabel',d
-            'coreset_farthest',
-            'nn_disagreement',
-            'margin_multilabel',
-            'sklearn_coreset',
-            'sklearn_typiclust',   
-            'all_quantiles',
-            'best_single',
-            'best_multiclass',
-            'most_confident_classes'
+            "coreset_farthest",
+            "nn_disagreement",
+            "margin_multilabel",
+            "sklearn_coreset",
+            "sklearn_typiclust",
+            "all_quantiles",
+            "best_single",
+            "best_multiclass",
+            "most_confident_classes",
         ]
 
         if method not in available_methods:
@@ -243,20 +270,20 @@ class SamplingStrategy:
 
         # Map method names to their implementation functions
         self._method_map = {
-            'random': self._random,
-            'margin': self._margin,
-            'custom': self._custom,
-            'bald': self._bald,
+            "random": self._random,
+            "margin": self._margin,
+            "custom": self._custom,
+            "bald": self._bald,
             # 'margin_multilabel': self._margin_multilabel,
-            'coreset_farthest': self._coreset_farthest,
-            'nn_disagreement': self._nn_disagreement,
-            'margin_multilabel': self._margin_multilabel,
-            'sklearn_coreset': self._sklearn_coreset,
-            'sklearn_typiclust': self._sklearn_typiclust,
-            'all_quantiles': self._all_quantiles,
-            'best_single': self._best_single, 
-            'best_multiclass': self._best_multiclass, 
-            'most_confident_classes': self._most_confident_classes
+            "coreset_farthest": self._coreset_farthest,
+            "nn_disagreement": self._nn_disagreement,
+            "margin_multilabel": self._margin_multilabel,
+            "sklearn_coreset": self._sklearn_coreset,
+            "sklearn_typiclust": self._sklearn_typiclust,
+            "all_quantiles": self._all_quantiles,
+            "best_single": self._best_single,
+            "best_multiclass": self._best_multiclass,
+            "most_confident_classes": self._most_confident_classes,
         }
 
         # Data attributes (see selct)
@@ -270,17 +297,21 @@ class SamplingStrategy:
 
         self.quantiles = [0, 0.25, 0.85, 1]
 
-        logger.info(f"Initialized SamplingStrategy with method='{method}' and n_samples={n_samples}")
+        logger.info(
+            f"Initialized SamplingStrategy with method='{method}' and n_samples={n_samples}"
+        )
 
-    def select(self,
-               unlabeled_indices: List[int],
-               predictions: Optional[np.ndarray] = None,
-               embeddings: Optional[np.ndarray] = None,
-               model=None,
-               metadata: Optional[pd.DataFrame] = None,
-               labeled_indices: Optional[List[int]] = None,
-               labels: Optional[np.ndarray] = None,
-               mc_predictions: Optional[np.ndarray] = None) -> Tuple[List[int], np.ndarray]:
+    def select(
+        self,
+        unlabeled_indices: List[int],
+        predictions: Optional[np.ndarray] = None,
+        embeddings: Optional[np.ndarray] = None,
+        model=None,
+        metadata: Optional[pd.DataFrame] = None,
+        labeled_indices: Optional[List[int]] = None,
+        labels: Optional[np.ndarray] = None,
+        mc_predictions: Optional[np.ndarray] = None,
+    ) -> Tuple[List[int], np.ndarray]:
         """
         Select samples for annotation and compute per-sample utility.
 
@@ -294,7 +325,7 @@ class SamplingStrategy:
             model: Optional reference to the model itself
             metadata: Optional DataFrame containing metadata
             labeled_indices: Optional list/array of labeled sample indices
-            labels: Optional ground-truth labels for all samples 
+            labels: Optional ground-truth labels for all samples
             mc_predictions: Optional repeated forward-pass predictions (mc_passes, N, num_classes)
 
         Returns:
@@ -334,7 +365,9 @@ class SamplingStrategy:
         selected = np.array(unlabeled_indices)[top_indices].tolist()
 
         logger.info(f"Selected {len(selected)} samples using {self.method} sampling")
-        logger.info(f"utility range: min={utility.min():.4f}, max={utility.max():.4f}, mean={utility.mean():.4f}")
+        logger.info(
+            f"utility range: min={utility.min():.4f}, max={utility.max():.4f}, mean={utility.mean():.4f}"
+        )
 
         return selected, utility
 
@@ -376,8 +409,12 @@ class SamplingStrategy:
         # Uncertainty = 1 - margin (smaller margin = higher uncertainty, already normalized to [0, 1])
         utility = 1.0 - margins
 
-        logger.info(f"Margin sampling - margins min: {margins.min():.4f}, max: {margins.max():.4f}")
-        logger.info(f"Margin sampling - utility min: {utility.min():.4f}, max: {utility.max():.4f}")
+        logger.info(
+            f"Margin sampling - margins min: {margins.min():.4f}, max: {margins.max():.4f}"
+        )
+        logger.info(
+            f"Margin sampling - utility min: {utility.min():.4f}, max: {utility.max():.4f}"
+        )
         return utility
 
     def _custom(self) -> np.ndarray:
@@ -410,7 +447,6 @@ class SamplingStrategy:
         # For now, default to random sampling
         # logger.warning("Custom sampling not implemented, falling back to random sampling")
         return self._random()
-    
 
     def _all_quantiles(self) -> np.ndarray:
         """
@@ -444,15 +480,19 @@ class SamplingStrategy:
         n_per_quantile = max(int(n_per_class / (len(self.quantiles) + 1)), 1)
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
-        samples['utility']= np.zeros(len(samples))
+        samples["utility"] = np.zeros(len(samples))
 
-        for c in np.arange(n_classes): 
-            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
-            for _, quantile in samples.groupby(f'quantile_{c}'): 
-                randomly_selected_samples = quantile.sample(n_per_quantile, random_state=self.rng)
-                samples.loc[randomly_selected_samples.index, 'utility'] = 1
+        for c in np.arange(n_classes):
+            samples[f"quantile_{c}"] = pd.qcut(
+                samples[c], self.quantiles, duplicates="drop", labels=False
+            )
+            for _, quantile in samples.groupby(f"quantile_{c}"):
+                randomly_selected_samples = quantile.sample(
+                    n_per_quantile, random_state=self.rng
+                )
+                samples.loc[randomly_selected_samples.index, "utility"] = 1
 
-        return samples['utility'].values
+        return samples["utility"].values
 
     def _best_single(self) -> np.ndarray:
         """
@@ -510,22 +550,28 @@ class SamplingStrategy:
         n_per_class = int(self.n_samples / n_classes)
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
-        samples['utility']= np.zeros(len(samples))
+        samples["utility"] = np.zeros(len(samples))
 
         quantiles_columns = []
-        for c in np.arange(n_classes): 
-            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
-            quantiles_columns.append(f'quantile_{c}')
-        
+        for c in np.arange(n_classes):
+            samples[f"quantile_{c}"] = pd.qcut(
+                samples[c], self.quantiles, duplicates="drop", labels=False
+            )
+            quantiles_columns.append(f"quantile_{c}")
+
         high_quantile = len(self.quantiles) - 1
-        samples['utility'] = 0
-        for c in np.arange(n_classes): 
+        samples["utility"] = 0
+        for c in np.arange(n_classes):
             # Samples which are in quantile max for one class and in quantile 0 for the others
-            high_quality_class_samples = (samples[f'quantile_{c}'] == high_quantile ) & ((samples[quantiles_columns]).sum(axis=1) == 2)
-            selection = samples[high_quality_class_samples].sample(min(n_per_class,high_quality_class_samples.sum()))
-            samples.loc[selection.index, 'utility'] = 1
-        
-        return samples['utility'].values
+            high_quality_class_samples = (samples[f"quantile_{c}"] == high_quantile) & (
+                (samples[quantiles_columns]).sum(axis=1) == 2
+            )
+            selection = samples[high_quality_class_samples].sample(
+                min(n_per_class, high_quality_class_samples.sum())
+            )
+            samples.loc[selection.index, "utility"] = 1
+
+        return samples["utility"].values
 
     def _best_multiclass(self) -> np.ndarray:
         """
@@ -582,18 +628,22 @@ class SamplingStrategy:
         n_classes = self.predictions.shape[1]
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
-        samples['utility']= np.zeros(len(samples))
+        samples["utility"] = np.zeros(len(samples))
 
         quantiles_columns = []
-        for c in np.arange(n_classes): 
-            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
-            quantiles_columns.append(f'quantile_{c}')
-        
+        for c in np.arange(n_classes):
+            samples[f"quantile_{c}"] = pd.qcut(
+                samples[c], self.quantiles, duplicates="drop", labels=False
+            )
+            quantiles_columns.append(f"quantile_{c}")
+
         high_quantile = len(self.quantiles) - 1
-        samples['utility'] = (samples[quantiles_columns].isin([0, high_quantile])).sum(axis=1)
-        samples['utility'] = samples['utility'] / samples['utility'].max()
-        
-        return samples['utility'].values
+        samples["utility"] = (samples[quantiles_columns].isin([0, high_quantile])).sum(
+            axis=1
+        )
+        samples["utility"] = samples["utility"] / samples["utility"].max()
+
+        return samples["utility"].values
 
     def _most_confident_classes(self) -> np.ndarray:
         """
@@ -650,34 +700,42 @@ class SamplingStrategy:
         n_classes = self.predictions.shape[1]
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
-        samples['utility']= np.zeros(len(samples))
+        samples["utility"] = np.zeros(len(samples))
 
         quantiles_columns = []
-        for c in np.arange(n_classes): 
-            samples[f'quantile_{c}'] = pd.qcut(samples[c], self.quantiles, duplicates='drop', labels=False)
-            quantiles_columns.append(f'quantile_{c}')
-        
-        high_quantile = len(self.quantiles) - 1
-        samples['utility'] = (samples[quantiles_columns] == high_quantile).sum(axis=1)
-        samples['utility'] = samples['utility'] / samples['utility'].max()
+        for c in np.arange(n_classes):
+            samples[f"quantile_{c}"] = pd.qcut(
+                samples[c], self.quantiles, duplicates="drop", labels=False
+            )
+            quantiles_columns.append(f"quantile_{c}")
 
-        # Alternatively, it could also be done with probabs directly 
+        high_quantile = len(self.quantiles) - 1
+        samples["utility"] = (samples[quantiles_columns] == high_quantile).sum(axis=1)
+        samples["utility"] = samples["utility"] / samples["utility"].max()
+
+        # Alternatively, it could also be done with probabs directly
         utility = unlabeled_predictions.sum(axis=1)
         utility = utility / utility.max()
-        
-        return samples['utility'].values
-    
+
+        return samples["utility"].values
+
     def _bald(self) -> np.ndarray:
         # self.mc_predictions: (n_passes, n_samples, n_classes)
 
         if self.mc_predictions is None:
-            raise ValueError("MC predictions unavailable, this method requires multiple mc_dropout_passes to be set")
+            raise ValueError(
+                "MC predictions unavailable, this method requires multiple mc_dropout_passes to be set"
+            )
 
-        mc = self.mc_predictions[:, self.unlabeled_indices, :]  # (n_passes, n_unlabeled, n_classes)
-        mean_p = mc.mean(axis=0)                                # (n_unlabeled, n_classes)
-        H_mean = -np.sum(mean_p * np.log(mean_p + 1e-8), axis=1)          # predictive entropy
-        mean_H = -np.mean(np.sum(mc * np.log(mc + 1e-8), axis=2), axis=0) # expected entropy
-        return H_mean - mean_H                                              # BALD score
+        mc = self.mc_predictions[
+            :, self.unlabeled_indices, :
+        ]  # (n_passes, n_unlabeled, n_classes)
+        mean_p = mc.mean(axis=0)  # (n_unlabeled, n_classes)
+        H_mean = -np.sum(mean_p * np.log(mean_p + 1e-8), axis=1)  # predictive entropy
+        mean_H = -np.mean(
+            np.sum(mc * np.log(mc + 1e-8), axis=2), axis=0
+        )  # expected entropy
+        return H_mean - mean_H  # BALD score
 
     @staticmethod
     def _normalize(scores: np.ndarray) -> np.ndarray:
@@ -906,7 +964,9 @@ class SamplingStrategy:
         # Normalize to [0, 1]: 0.5 is the max possible mean_margin
         utility = (1.0 - (mean_margin / 0.5)).astype(np.float32)
 
-        logger.info(f"margin_multilabel - mean_margin min: {mean_margin.min():.4f}, max: {mean_margin.max():.4f}")
+        logger.info(
+            f"margin_multilabel - mean_margin min: {mean_margin.min():.4f}, max: {mean_margin.max():.4f}"
+        )
         return utility
 
     def _sklearn_coreset(self) -> np.ndarray:
@@ -935,7 +995,9 @@ class SamplingStrategy:
 
         # Cold-start fallback: no labeled samples means no anchor for distance computation.
         if len(self.labeled_indices) == 0:
-            logger.warning("sklearn_coreset: no labeled samples, falling back to random")
+            logger.warning(
+                "sklearn_coreset: no labeled samples, falling back to random"
+            )
             return self._random()
 
         # Build y: labeled samples get a dummy label (0), everything else (unlabeled
@@ -967,7 +1029,9 @@ class SamplingStrategy:
             if idx in unlabeled_pos:
                 utility[unlabeled_pos[idx]] = 1.0
 
-        logger.info(f"sklearn_coreset - selected {len(selected_indices)} samples via greedy k-center")
+        logger.info(
+            f"sklearn_coreset - selected {len(selected_indices)} samples via greedy k-center"
+        )
         return utility.astype(np.float32)
 
     def _sklearn_typiclust(self) -> np.ndarray:
@@ -999,7 +1063,9 @@ class SamplingStrategy:
         # KMeans is slow and noisy in high dimensions; PCA to 64-D gives a large
         # speed-up with minimal loss of cluster structure (same as _coreset_farthest).
         pca_dim = 64
-        X = _project_with_pca(self.embeddings.astype(np.float32, copy=False), out_dim=pca_dim)
+        X = _project_with_pca(
+            self.embeddings.astype(np.float32, copy=False), out_dim=pca_dim
+        )
 
         # Build y: labeled samples get a dummy label (0), everything else (unlabeled
         # AND validation) gets MISSING_LABEL so only true labeled samples serve as anchors.
@@ -1030,7 +1096,9 @@ class SamplingStrategy:
             if idx in unlabeled_pos:
                 utility[unlabeled_pos[idx]] = 1.0
 
-        logger.info(f"sklearn_typiclust - typicality min: {util_scores.min():.4f}, max: {util_scores.max():.4f}")
+        logger.info(
+            f"sklearn_typiclust - typicality min: {util_scores.min():.4f}, max: {util_scores.max():.4f}"
+        )
         return utility.astype(np.float32)
 
 
@@ -1042,7 +1110,13 @@ class WarmupStrategy:
     only have access to raw embeddings -- no model predictions are available yet.
     """
 
-    def __init__(self, method: str = "density", n_samples: int = 0, num_classes: int = None, random_state: Optional[int] = None):
+    def __init__(
+        self,
+        method: str = "density",
+        n_samples: int = 0,
+        num_classes: int = None,
+        random_state: Optional[int] = None,
+    ):
         """
         Args:
             method: Warmup method ('density', 'random', 'custom')
@@ -1054,7 +1128,7 @@ class WarmupStrategy:
         self.num_classes = num_classes
         self.rng = np.random.default_rng(random_state)
 
-        available_methods = ['density', 'random', 'custom']
+        available_methods = ["density", "random", "custom"]
         if method not in available_methods:
             raise ValueError(
                 f"Unknown warmup strategy: '{method}'. "
@@ -1062,21 +1136,25 @@ class WarmupStrategy:
             )
 
         self._method_map = {
-            'density': self._density,
-            'random': self._random,
-            'custom': self._custom,
-            'kmeans': self._kmeans,
-            'eigenvalues': self._eigenvalues, 
-            'metadata': self._metadata
+            "density": self._density,
+            "random": self._random,
+            "custom": self._custom,
+            "kmeans": self._kmeans,
+            "eigenvalues": self._eigenvalues,
+            "metadata": self._metadata,
         }
 
         # Set by select() before calling method implementations
         self.candidate_indices: Optional[np.ndarray] = None
         self.embeddings: Optional[np.ndarray] = None
 
-        logger.info(f"Initialized WarmupStrategy with method='{method}' and n_samples={n_samples}")
+        logger.info(
+            f"Initialized WarmupStrategy with method='{method}' and n_samples={n_samples}"
+        )
 
-    def select(self, candidate_indices: np.ndarray, embeddings: np.ndarray) -> List[int]:
+    def select(
+        self, candidate_indices: np.ndarray, embeddings: np.ndarray
+    ) -> List[int]:
         """
         Select warmup samples from the candidate pool.
 
@@ -1111,9 +1189,9 @@ class WarmupStrategy:
         k = min(20, len(self.candidate_indices) - 1)
         return densityEstimation(
             embeddings=self.embeddings[self.candidate_indices],
-            method='knn',
+            method="knn",
             k=k,
-            beta=1
+            beta=1,
         )
 
     def _random(self) -> np.ndarray:
@@ -1152,7 +1230,9 @@ class WarmupStrategy:
             utility: Array of utility scores for candidates, shape (n_candidates,)
         """
         # TODO: Implement your custom warmup logic here
-        logger.warning("Custom warmup not implemented, falling back to density sampling")
+        logger.warning(
+            "Custom warmup not implemented, falling back to density sampling"
+        )
         return self._density()
 
     def _kmeans(self) -> np.ndarray:
@@ -1181,11 +1261,13 @@ class WarmupStrategy:
         Returns:
             utility: Array of utility scores for candidates, shape (n_candidates,)
         """
-        return KMeansEstimation(embeddings=self.embeddings[self.candidate_indices], 
-                                num_classes=self.n_classes,
-                                n_samples=self.n_samples, 
-                                random_state=self.rng)
-    
+        return KMeansEstimation(
+            embeddings=self.embeddings[self.candidate_indices],
+            num_classes=self.n_classes,
+            n_samples=self.n_samples,
+            random_state=self.rng,
+        )
+
     def _eigenvalues(self) -> np.ndarray:
         """
         Custom warmup strategy template.
@@ -1212,9 +1294,11 @@ class WarmupStrategy:
         Returns:
             utility: Array of utility scores for candidates, shape (n_candidates,)
         """
-        return uniformEmbeddingSampling(embeddings=self.embeddings[self.candidate_indices], 
-                                        n_samples=self.n_samples, 
-                                        random_state=self.rng)
+        return uniformEmbeddingSampling(
+            embeddings=self.embeddings[self.candidate_indices],
+            n_samples=self.n_samples,
+            random_state=self.rng,
+        )
 
     def _metadata(self) -> np.ndarray:
         """
@@ -1243,24 +1327,25 @@ class WarmupStrategy:
             utility: Array of utility scores for candidates, shape (n_candidates,)
         """
         # TODO: Implement your custom warmup logic here
-        logger.warning("Custom warmup not implemented, falling back to density sampling")
+        logger.warning(
+            "Custom warmup not implemented, falling back to density sampling"
+        )
         return self._density()
 
 
-
-if __name__ ==  "__main__":
+if __name__ == "__main__":
 
     print("=" * 60)
     print("SamplingStrategy - Unit Test on Dummy Data")
     print("=" * 60)
 
     # --- Dummy data setup ---
-    N_SAMPLES    = 20
-    N_TOTAL      = 200   # total samples in the pool
-    N_UNLABELED  = 160    # samples without labels
-    N_LABELED    = 40    # samples already labeled
-    N_CLASSES    = 8
-    EMBED_DIM    = 16
+    N_SAMPLES = 20
+    N_TOTAL = 200  # total samples in the pool
+    N_UNLABELED = 160  # samples without labels
+    N_LABELED = 40  # samples already labeled
+    N_CLASSES = 8
+    EMBED_DIM = 16
     RANDOM_STATE = 42
 
     rng = np.random.default_rng(RANDOM_STATE)
@@ -1288,16 +1373,20 @@ if __name__ ==  "__main__":
     labels = rng.integers(0, N_CLASSES, size=N_TOTAL)
 
     # Minimal metadata DataFrame
-    metadata = pd.DataFrame({
-        'sample_id': all_indices,
-        'split':     ['labeled'] * N_LABELED + ['unlabeled'] * N_UNLABELED,
-    })
+    metadata = pd.DataFrame(
+        {
+            "sample_id": all_indices,
+            "split": ["labeled"] * N_LABELED + ["unlabeled"] * N_UNLABELED,
+        }
+    )
 
     # --- Methods to test ---
-    method_to_test = 'quantiles'
+    method_to_test = "quantiles"
     print(f"\n--- Testing method: '{method_to_test}' ---")
 
-    strategy = SamplingStrategy(method=method_to_test, n_samples=N_SAMPLES, random_state=RANDOM_STATE)
+    strategy = SamplingStrategy(
+        method=method_to_test, n_samples=N_SAMPLES, random_state=RANDOM_STATE
+    )
 
     selected, utility = strategy.select(
         unlabeled_indices=unlabeled_indices,
@@ -1322,21 +1411,28 @@ if __name__ ==  "__main__":
     fig, axes = plt.subplots(1, N_CLASSES, figsize=(4 * N_CLASSES, 4), sharey=True)
 
     unlabeled_preds = predictions[unlabeled_indices]  # shape: (N_UNLABELED, N_CLASSES)
-    selected_preds  = predictions[selected]           # shape: (N_SAMPLES, N_CLASSES)
+    selected_preds = predictions[selected]  # shape: (N_SAMPLES, N_CLASSES)
 
     for i, ax in enumerate(axes):
         data = unlabeled_preds[:, i]
-        kde  = gaussian_kde(data, bw_method='scott')
-        x    = np.linspace(data.min(), data.max(), 300)
+        kde = gaussian_kde(data, bw_method="scott")
+        x = np.linspace(data.min(), data.max(), 300)
 
-        ax.plot(x, kde(x), color='steelblue', linewidth=2, label='Unlabeled pool')
-        ax.fill_between(x, kde(x), alpha=0.15, color='steelblue')
+        ax.plot(x, kde(x), color="steelblue", linewidth=2, label="Unlabeled pool")
+        ax.fill_between(x, kde(x), alpha=0.15, color="steelblue")
 
         # Selected samples as dots on the x-axis (rug) at y=0
         sel_probs = selected_preds[:, i]
-        ax.scatter(sel_probs, np.zeros_like(sel_probs),
-                color='tomato', s=60, zorder=5,
-                marker='|', linewidths=2, label='Selected')
+        ax.scatter(
+            sel_probs,
+            np.zeros_like(sel_probs),
+            color="tomato",
+            s=60,
+            zorder=5,
+            marker="|",
+            linewidths=2,
+            label="Selected",
+        )
 
         ax.set_title(class_names[i])
         ax.set_xlabel("Predicted probability")

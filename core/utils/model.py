@@ -1,6 +1,7 @@
 """
 Simple active learning model for embeddings
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,7 +17,9 @@ class EmbeddingClassifier(nn.Module):
         num_classes: Number of output classes
     """
 
-    def __init__(self, input_dim=1024, hidden_dim=None, num_classes=23, dropout_rate=0.0):
+    def __init__(
+        self, input_dim=1024, hidden_dim=None, num_classes=23, dropout_rate=0.0
+    ):
         super().__init__()
 
         if hidden_dim is None:
