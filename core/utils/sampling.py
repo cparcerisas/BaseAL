@@ -974,6 +974,9 @@ class WarmupStrategy:
             'density': self._density,
             'random': self._random,
             'custom': self._custom,
+            'kmeans': self._kmeans,
+            'eigenvalues': self._eigenvalues, 
+            'metadata': self._metadata
         }
 
         # Set by select() before calling method implementations
@@ -1060,3 +1063,95 @@ class WarmupStrategy:
         # TODO: Implement your custom warmup logic here
         logger.warning("Custom warmup not implemented, falling back to density sampling")
         return self._density()
+
+    def _kmeans(self) -> np.ndarray:
+        """
+        Custom warmup strategy template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM WARMUP:
+        =============================================
+
+        1. This method computes utility scores for all candidate samples.
+
+        2. Scores should be in [0, 1] where:
+           - 1.0 = highest priority for initial annotation
+           - 0.0 = lowest priority
+
+        3. Available instance attributes (set by select()):
+           - self.candidate_indices: sorted array of global indices for all
+                                     non-validation samples
+           - self.embeddings:        full embedding array (n_total x embedding_dim);
+                                     access candidate embeddings via
+                                     self.embeddings[self.candidate_indices]
+
+        Note: No model predictions exist at warmup time -- only raw embeddings
+        are available.
+
+        Returns:
+            utility: Array of utility scores for candidates, shape (n_candidates,)
+        """
+        # TODO: Implement your custom warmup logic here
+        logger.warning("Custom warmup not implemented, falling back to density sampling")
+        return self._density()
+    
+    def _eigenvalues(self) -> np.ndarray:
+        """
+        Custom warmup strategy template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM WARMUP:
+        =============================================
+
+        1. This method computes utility scores for all candidate samples.
+
+        2. Scores should be in [0, 1] where:
+           - 1.0 = highest priority for initial annotation
+           - 0.0 = lowest priority
+
+        3. Available instance attributes (set by select()):
+           - self.candidate_indices: sorted array of global indices for all
+                                     non-validation samples
+           - self.embeddings:        full embedding array (n_total x embedding_dim);
+                                     access candidate embeddings via
+                                     self.embeddings[self.candidate_indices]
+
+        Note: No model predictions exist at warmup time -- only raw embeddings
+        are available.
+
+        Returns:
+            utility: Array of utility scores for candidates, shape (n_candidates,)
+        """
+        return uniformEmbeddingSampling(embeddings=self.embeddings[self.candidate_indices], 
+                                        n_samples=self.n_samples, 
+                                        random_state=self.rng)
+
+    def _metadata(self) -> np.ndarray:
+        """
+        Custom warmup strategy template.
+
+        INSTRUCTIONS FOR IMPLEMENTING CUSTOM WARMUP:
+        =============================================
+
+        1. This method computes utility scores for all candidate samples.
+
+        2. Scores should be in [0, 1] where:
+           - 1.0 = highest priority for initial annotation
+           - 0.0 = lowest priority
+
+        3. Available instance attributes (set by select()):
+           - self.candidate_indices: sorted array of global indices for all
+                                     non-validation samples
+           - self.embeddings:        full embedding array (n_total x embedding_dim);
+                                     access candidate embeddings via
+                                     self.embeddings[self.candidate_indices]
+
+        Note: No model predictions exist at warmup time -- only raw embeddings
+        are available.
+
+        Returns:
+            utility: Array of utility scores for candidates, shape (n_candidates,)
+        """
+        # TODO: Implement your custom warmup logic here
+        logger.warning("Custom warmup not implemented, falling back to density sampling")
+        return self._density()
+
+
