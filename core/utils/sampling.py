@@ -257,6 +257,7 @@ class SamplingStrategy:
             "sklearn_coreset",
             "sklearn_typiclust",
             "all_quantiles",
+            "high_quantile_per_class",
             "best_single",
             "best_multiclass",
             "most_confident_classes",
@@ -281,6 +282,7 @@ class SamplingStrategy:
             "sklearn_coreset": self._sklearn_coreset,
             "sklearn_typiclust": self._sklearn_typiclust,
             "all_quantiles": self._all_quantiles,
+            "high_quantile_per_class": self._high_quantile_per_class,
             "best_single": self._best_single,
             "best_multiclass": self._best_multiclass,
             "most_confident_classes": self._most_confident_classes,
@@ -450,31 +452,8 @@ class SamplingStrategy:
 
     def _all_quantiles(self) -> np.ndarray:
         """
-        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
+        All quantiles per class. This method selects per predicted class a fixed amount of samples of each quantile, regardless of the prediction of the other classes
         """
-        # define the quantiles
         n_classes = self.predictions.shape[1]
         n_per_class = int(self.n_samples / n_classes)
         n_per_quantile = max(int(n_per_class / (len(self.quantiles) + 1)), 1)
@@ -494,58 +473,33 @@ class SamplingStrategy:
 
         return samples["utility"].values
 
+    def _high_quantile_per_class(self) -> np.ndarray:
+        """
+        high quantile per predicted class: this method selects, per each class an equal amount of samples from the highest quantile.
+        """
+        n_classes = self.predictions.shape[1]
+        n_per_class = int(self.n_samples / n_classes)
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples["utility"] = np.zeros(len(samples))
+
+        for c in np.arange(n_classes):
+            quantiles = pd.qcut(
+                samples[c], self.quantiles, duplicates="drop", labels=False
+            )
+            randomly_selected_samples = samples[
+                quantiles == (len(self.quantiles) - 1)
+            ].sample(n_per_class, random_state=self.rng)
+            samples.loc[randomly_selected_samples.index, "utility"] = 1
+
+        return samples["utility"].values
+
     def _best_single(self) -> np.ndarray:
         """
-        Custom sampling template.
+        Best isolated call, per predicted class an equal amount of samples. This method attemps to select the samples which are high presence confidence (highest quantile) for ONLY one class,
+        and high absence confidence for all the other classes (lowest quantile).
 
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
         """
-        """
-        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
-        """
-        # define the quantiles
         n_classes = self.predictions.shape[1]
         n_per_class = int(self.n_samples / n_classes)
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
@@ -575,56 +529,9 @@ class SamplingStrategy:
 
     def _best_multiclass(self) -> np.ndarray:
         """
-        Custom sampling template.
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
+        This sampling strategy takes samples where the model is very sure about presence of multiple classes (all highest quantile),
+        regardless of which/how many classes, and sure about the absence of the rest of the classes (lowest quantile). It minimizes the selection of samples where the model is doubtful
         """
-        """
-        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
-        """
-        # define the quantiles
         n_classes = self.predictions.shape[1]
         unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
         samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
@@ -647,54 +554,9 @@ class SamplingStrategy:
 
     def _most_confident_classes(self) -> np.ndarray:
         """
-        Custom sampling template.
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
-        """
-        """
-        Custom sampling template: randomly select a number of samples per class based on quantiles distribution
-
-        INSTRUCTIONS FOR IMPLEMENTING CUSTOM SAMPLING:
-        ===============================================
-
-        1. This method computes utility scores for all unlabeled samples.
-
-        2. The utility scores should be normalized to [0, 1] where:
-           - 1.0 = maximum utility (highest priority for annotation)
-           - 0.0 = lowest utility (lowest priority for annotation)
-
-        3. Available instance attributes (set by select() method):
-           - self.unlabeled_indices: List of indices in the unlabeled pool
-           - self.predictions: Model predictions array of shape (n_total_samples, num_classes)
-                              Contains probabilities for all classes
-           - self.embeddings: Full embeddings array of shape (n_total_samples, embedding_dim)
-                             The raw feature vectors before classification
-           - self.model: Reference to the trained model (if you need to extract features/gradients)
-           - self.metadata: DataFrame containing annotation data and metadata
-                              Can contain custom metadata fields for advanced sampling strategies
-
-        Returns:
-            utility: Array of utility scores for samples [0, 1]
+        This sampling strategy takes samples where the model is very sure about presence of multiple classes (all highest quantile),
+        regardless of which/how many classes, and sure about the absence of the rest of the classes (lowest quantile).
+        The difference with best_multiclass is that it gives priority to samples with multiple positive presence of classes (the most classes the best)
         """
         # define the quantiles
         n_classes = self.predictions.shape[1]
