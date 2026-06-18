@@ -9,8 +9,13 @@ from typing import List, Optional, Tuple
 import faiss
 import numpy as np
 import pandas as pd
+from skactiveml.pool import CoreSet
+from skactiveml.utils import MISSING_LABEL, rand_argmax
+from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances_argmin_min
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import normalize
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +43,8 @@ def densityEstimation(
 def KMeansEstimation(
     embeddings: Optional[np.ndarray] = None,
     num_classes: int = None,
-    n_samples: int = 20,
     random_state: Optional[int] = None,
 ) -> np.ndarray:
-    from sklearn.cluster import KMeans
-    from sklearn.preprocessing import normalize
-
     use_umap = False
 
     # Normalise embeddings before clustering
@@ -58,7 +59,7 @@ def KMeansEstimation(
     else:
         embeddings_for_clustering = embeddings_norm
 
-    kmeans = KMeans(n_clusters=n_samples, random_state=random_state, n_init="auto")
+    kmeans = KMeans(n_clusters=num_classes, random_state=random_state, n_init="auto")
     kmeans.fit(embeddings_for_clustering)
 
     # For each centroid, pick the closest actual sample
@@ -231,6 +232,7 @@ class SamplingStrategy:
         method: str = "random",
         n_samples: int = 20,
         random_state: Optional[int] = None,
+        label_to_idx: Optional[list] = None,
     ):
         """
         Initialize sampling strategy
@@ -243,6 +245,7 @@ class SamplingStrategy:
         self.method = method
         self.n_samples = n_samples
         self.rng = np.random.default_rng(random_state)
+        self.label_to_idx = label_to_idx
 
         # Available sampling methods
         available_methods = [
@@ -261,6 +264,11 @@ class SamplingStrategy:
             "best_single",
             "best_multiclass",
             "most_confident_classes",
+            "balance_class_by_clusters",
+            "balance_class_by_confidence",
+            "sample_from_dense_clusters",
+            "sklearn_coreset_no_noise",
+            "sklearn_coreset_far_from_noise",
         ]
 
         if method not in available_methods:
@@ -286,6 +294,11 @@ class SamplingStrategy:
             "best_single": self._best_single,
             "best_multiclass": self._best_multiclass,
             "most_confident_classes": self._most_confident_classes,
+            "balance_class_by_clusters": self._balance_class_by_clusters,
+            "balance_class_by_confidence": self._balance_class_by_confidence,
+            "sample_from_dense_clusters": self._sample_from_dense_clusters,
+            "sklearn_coreset_no_noise": self._sklearn_coreset_no_noise,
+            "sklearn_coreset_far_from_noise": self._sklearn_coreset_far_from_noise,
         }
 
         # Data attributes (see selct)
@@ -298,7 +311,7 @@ class SamplingStrategy:
         self.labels = None
 
         self.quantiles = [0, 0.25, 0.85, 1]
-
+        self.clusters = None
         logger.info(
             f"Initialized SamplingStrategy with method='{method}' and n_samples={n_samples}"
         )
@@ -467,7 +480,7 @@ class SamplingStrategy:
             )
             for _, quantile in samples.groupby(f"quantile_{c}"):
                 randomly_selected_samples = quantile.sample(
-                    n_per_quantile, random_state=self.rng
+                    n_per_quantile, random_state=self.rng.integers(80)
                 )
                 samples.loc[randomly_selected_samples.index, "utility"] = 1
 
@@ -489,7 +502,7 @@ class SamplingStrategy:
             )
             randomly_selected_samples = samples[
                 quantiles == (len(self.quantiles) - 1)
-            ].sample(n_per_class, random_state=self.rng)
+            ].sample(n_per_class, random_state=self.rng.integers(80))
             samples.loc[randomly_selected_samples.index, "utility"] = 1
 
         return samples["utility"].values
@@ -578,6 +591,210 @@ class SamplingStrategy:
         # Alternatively, it could also be done with probabs directly
         utility = unlabeled_predictions.sum(axis=1)
         utility = utility / utility.max()
+
+        return samples["utility"].values
+
+    def _balance_class_by_clusters(self) -> np.ndarray:
+        # Normalise embeddings before clustering
+        n_classes = self.predictions.shape[1]
+        if self.clusters is None:
+            embeddings_norm = normalize(self.embeddings, norm="l2")
+            kmeans = KMeans(
+                n_clusters=n_classes, random_state=self.rng.integers(80), n_init="auto"
+            )
+            self.clusters = kmeans.fit_predict(embeddings_norm)
+
+        # For each cluster check labels and confidences
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples["cluster"] = self.clusters[self.unlabeled_indices]
+        samples["utility"] = 0
+
+        known_samples = pd.DataFrame(index=self.labeled_indices, data=self.labels)
+        known_samples["cluster"] = self.clusters[self.labeled_indices]
+
+        sampled_classes = {}
+        unsampled_classes = []
+        for l in np.arange(self.labels.shape[1]):
+            n_samples = self.labels[:, l].sum()
+            if n_samples > 0:
+                sampled_classes[l] = n_samples
+            else:
+                unsampled_classes.append(l)
+
+        to_select_n_samples = int(np.percentile(list(sampled_classes.values()), 10))
+
+        # Find the noise cluster, we don't want to sample from there
+        possible_noise_labels = ["nan", None, "no_call", np.nan, "NaN"]
+        noise_indexes = []
+        for p in possible_noise_labels:
+            if p in self.label_to_idx.keys():
+                noise_indexes.append(self.label_to_idx[p])
+
+        noise_clusters = []
+        for c, cluster_samples in known_samples.groupby("cluster"):
+            if len(cluster_samples) > 2:
+                proportion_noise_samples = (
+                    cluster_samples[noise_indexes].sum(axis=1) >= 1
+                ).sum() / (
+                    cluster_samples[self.label_to_idx.values()].sum(axis=1) >= 1
+                ).sum()
+                if proportion_noise_samples > 0.6:
+                    noise_clusters.append(c)
+
+        # first step, check if there are clusters which are NOT sampled:
+        sampled_clusters = set(known_samples.cluster.unique())
+        total_clusters = set(samples.cluster.unique())
+        unsampled_clusters = total_clusters - sampled_clusters
+        if len(unsampled_clusters) > 0:
+            for c in unsampled_clusters:
+                selected_samples_cluster = samples.loc[samples.cluster == c].sample(
+                    int(to_select_n_samples)
+                )
+                samples.loc[selected_samples_cluster.index, "utility"] = 1
+
+        # Then try to sample the classes which are not sampled by selecting the samples with higher confidence
+        # for u_class in unsampled_classes:
+        #     candidate_samples = samples.loc[samples.utility == 0]
+        #     selected_samples = candidate_samples.sort_values(by=u_class).iloc[:median_num_samples+1]
+        #     samples.loc[selected_samples.index, 'utility'] = 1
+
+        # then check which classes are the least sampled and sample in the corresponding clusters
+        n_left_to_sample = self.n_samples - samples.utility.sum()
+
+        candidates_samples = samples.loc[~samples.cluster.isin(noise_clusters)]
+        candidates_samples = candidates_samples.loc[candidates_samples.utility == 0]
+
+        if n_left_to_sample > 0:
+            max_num_samples = max(list(sampled_classes.values()))
+            left_for_balance = (
+                max_num_samples - np.array(list(sampled_classes.values()))
+            ).sum()
+            # all the classes are already sampled, lets check which clusters have potentially samples of that class and sample randomly there
+            for class_idx, n_samples in sampled_classes.items():
+                n_to_sample = np.ceil(
+                    ((max_num_samples - n_samples) / left_for_balance)
+                    * n_left_to_sample
+                )
+                if (n_to_sample > 0) and (len(candidates_samples) > 0):
+                    clusters_with_class = known_samples.loc[
+                        known_samples[class_idx] == 1
+                    ].cluster.unique()
+                    samples_in_selected_clusters = candidates_samples.loc[
+                        candidates_samples.cluster.isin(clusters_with_class)
+                    ]
+                    if len(samples_in_selected_clusters) > 0:
+                        selected_samples_clusters = samples_in_selected_clusters.sample(
+                            int(n_to_sample)
+                        )  # this could also be based on confidence
+                        samples.loc[selected_samples_clusters.index, "utility"] = 0.8
+
+        print((samples["utility"] > 0).sum())
+        return samples["utility"].values
+
+    def _sample_from_dense_clusters(self) -> np.ndarray:
+        # Normalise embeddings before clustering
+        n_classes = self.predictions.shape[1]
+        if self.clusters is None:
+            embeddings_norm = normalize(self.embeddings, norm="l2")
+            kmeans = KMeans(
+                n_clusters=n_classes, random_state=self.rng.integers(80), n_init="auto"
+            )
+            self.clusters = kmeans.fit_predict(embeddings_norm)
+
+        # For each cluster check labels and confidences
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples["cluster"] = self.clusters[self.unlabeled_indices]
+        samples["utility"] = 0
+
+        known_samples = pd.DataFrame(index=self.labeled_indices, data=self.labels)
+        known_samples["cluster"] = self.clusters[self.labeled_indices]
+
+        # Find the noise cluster, we don't want to sample from there
+        possible_noise_labels = ["nan", None, "no_call", np.nan, "NaN"]
+        not_noise_columns = self.label_to_idx.copy()
+        for p in possible_noise_labels:
+            if p in self.label_to_idx.keys():
+                not_noise_columns.pop(p)
+
+        # first step, check if there are clusters which are NOT sampled:
+        sampled_classes = {}
+
+        for l in np.arange(self.labels.shape[1]):
+            n_samples = self.labels[:, l].sum()
+            if n_samples > 0:
+                sampled_classes[l] = n_samples
+
+        to_select_n_samples = int(np.percentile(list(sampled_classes.values()), 25))
+
+        # first step, check if there are clusters which are NOT sampled:
+        sampled_clusters = set(known_samples.cluster.unique())
+        total_clusters = set(samples.cluster.unique())
+        unsampled_clusters = total_clusters - sampled_clusters
+        if len(unsampled_clusters) > 0:
+            for c in unsampled_clusters:
+                selected_samples_cluster = samples.loc[samples.cluster == c].sample(
+                    int(to_select_n_samples)
+                )
+                samples.loc[selected_samples_cluster.index, "utility"] = 1
+
+        n_left_to_sample = self.n_samples - samples.utility.sum()
+        candidates_samples = samples.loc[samples.utility == 0]
+        total_clusters = set(candidates_samples.cluster.unique())
+
+        cluster_importance = {}
+        for c in total_clusters:
+            known_samples_cluster = known_samples.loc[known_samples.cluster == c]
+            n_pos_detections_cluster = (
+                known_samples_cluster[not_noise_columns.values()].sum(axis=1) > 1
+            ).sum()
+            # cluster_importance[c] = n_pos_detections_cluster / len(known_samples_cluster)
+            cluster_importance[c] = (
+                n_pos_detections_cluster / (samples.cluster == c).sum()
+            )
+
+        for c, samples_in_cluster in candidates_samples.groupby("cluster"):
+            n_to_sample = np.ceil(
+                (
+                    cluster_importance[c]
+                    / np.array(list(cluster_importance.values())).sum()
+                )
+                * n_left_to_sample
+            )
+            if n_to_sample is not None:
+                selected_samples_clusters = samples_in_cluster.sample(
+                    int(n_to_sample)
+                )  # this could also be based on confidence
+                samples.loc[selected_samples_clusters.index, "utility"] = 1
+
+        return samples["utility"].values
+
+    def _balance_class_by_confidence(self) -> np.ndarray:
+        # For each cluster check labels and confidences
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples["utility"] = 0
+
+        sampled_classes = {}
+        for l in np.arange(self.labels.shape[1]):
+            n_samples = self.labels[:, l].sum()
+            sampled_classes[l] = n_samples
+
+        max_num_samples = max(list(sampled_classes.values()))
+        left_for_balance = np.array(list(sampled_classes.values())).sum()
+
+        # Then try to sample the classes which are not sampled by selecting the samples with higher confidence
+        for u_class, n_samples in sampled_classes.items():
+            n_to_sample = np.ceil(
+                ((max_num_samples - n_samples) / left_for_balance) * self.n_samples
+            )
+
+            candidate_samples = samples.loc[samples.utility == 0]
+            selected_samples = candidate_samples.sort_values(by=u_class).iloc[
+                : int(n_to_sample) + 1
+            ]
+            samples.loc[selected_samples.index, "utility"] = 1
 
         return samples["utility"].values
 
@@ -831,6 +1048,183 @@ class SamplingStrategy:
         )
         return utility
 
+    def _sklearn_coreset_no_noise(self) -> np.ndarray:
+        """
+        Greedy k-center (CoreSet) sampling using scikit-activeml. This modification igores clusters with high density of noise
+
+        Selects a diverse set of samples by minimising the maximum distance from
+        any unlabeled point to its nearest selected (or already-labeled) point.
+
+        scikit-activeml reference:
+            skactiveml.pool.CoreSet
+            https://scikit-activeml.github.io/latest/generated/skactiveml.pool.CoreSet.html
+
+        Returns:
+            utility: Normalized min-distance-to-labeled scores [0, 1]
+                     where 1 = farthest from any labeled point
+        """
+        from skactiveml.utils import MISSING_LABEL
+
+        if self.embeddings is None:
+            raise ValueError("sklearn_coreset requires embeddings")
+
+        n_total = self.embeddings.shape[0]
+        n_samples = min(self.n_samples, len(self.unlabeled_indices))
+
+        n_classes = self.predictions.shape[1]
+        if self.clusters is None:
+            embeddings_norm = normalize(self.embeddings, norm="l2")
+            kmeans = KMeans(
+                n_clusters=n_classes, random_state=self.rng.integers(80), n_init="auto"
+            )
+            self.clusters = kmeans.fit_predict(embeddings_norm)
+
+        known_samples = pd.DataFrame(index=self.labeled_indices, data=self.labels)
+        known_samples["cluster"] = self.clusters[self.labeled_indices]
+
+        unlabeled_predictions = self.predictions[self.unlabeled_indices, :]
+        samples = pd.DataFrame(index=self.unlabeled_indices, data=unlabeled_predictions)
+        samples["cluster"] = self.clusters[self.unlabeled_indices]
+
+        # Find the noise cluster, we don't want to sample from there
+        possible_noise_labels = ["nan", None, "no_call", np.nan, "NaN"]
+        noise_indexes = []
+        for p in possible_noise_labels:
+            if p in self.label_to_idx.keys():
+                noise_indexes.append(self.label_to_idx[p])
+
+        noise_clusters = []
+        for c, cluster_samples in known_samples.groupby("cluster"):
+            if len(cluster_samples) > 2:
+                proportion_noise_samples = (
+                    cluster_samples[noise_indexes].sum(axis=1) >= 1
+                ).sum() / (
+                    cluster_samples[self.label_to_idx.values()].sum(axis=1) >= 1
+                ).sum()
+                if proportion_noise_samples > 0.6:
+                    noise_clusters.append(c)
+
+        print(noise_clusters)
+        candidate_indices = samples.loc[~samples.cluster.isin(noise_clusters)]
+
+        # Cold-start fallback: no labeled samples means no anchor for distance computation.
+        if len(self.labeled_indices) == 0:
+            logger.warning(
+                "sklearn_coreset: no labeled samples, falling back to random"
+            )
+            return self._random()
+
+        # Build y: labeled samples get a dummy label (0), everything else (unlabeled
+        # AND validation) gets MISSING_LABEL so only true labeled samples serve as anchors.
+        # CoreSet only uses y to distinguish labeled from unlabeled -- label values are ignored.
+        y = np.full(n_total, MISSING_LABEL, dtype=float)
+        y[self.labeled_indices] = 0
+
+        strategy = CoreSet(missing_label=MISSING_LABEL)
+
+        selected_indices, utilities = strategy.query(
+            X=self.embeddings,
+            y=y,
+            candidates=np.array(candidate_indices.index),
+            batch_size=n_samples,
+            return_utilities=True,
+        )
+
+        # utilities[0] = initial min-distance-to-labeled for every candidate -- use for
+        # visualisation / relative ranking of non-selected samples.
+        util_scores = utilities[0][self.unlabeled_indices]
+        utility = self._normalize(np.clip(util_scores, 0, None)) * 0.99
+
+        # Override utility to 1.0 for the samples scikit-activeml actually chose via its
+        # greedy k-center algorithm. This ensures select() reproduces the greedy selection
+        # rather than a naive top-K on the initial distances (which clusters picks together).
+        unlabeled_pos = {idx: pos for pos, idx in enumerate(self.unlabeled_indices)}
+        for idx in selected_indices:
+            if idx in unlabeled_pos:
+                utility[unlabeled_pos[idx]] = 1.0
+
+        logger.info(
+            f"sklearn_coreset - selected {len(selected_indices)} samples via greedy k-center"
+        )
+        return utility.astype(np.float32)
+
+    def _sklearn_coreset_far_from_noise(self) -> np.ndarray:
+        """
+        Greedy k-center (CoreSet) sampling using scikit-activeml.
+
+        Selects a diverse set of samples by minimising the maximum distance from
+        any unlabeled point to its nearest selected (or already-labeled) point.
+
+        scikit-activeml reference:
+            skactiveml.pool.CoreSet
+            https://scikit-activeml.github.io/latest/generated/skactiveml.pool.CoreSet.html
+
+        Returns:
+            utility: Normalized min-distance-to-labeled scores [0, 1]
+                     where 1 = farthest from any labeled point
+        """
+        from skactiveml.utils import MISSING_LABEL
+
+        if self.embeddings is None:
+            raise ValueError("sklearn_coreset requires embeddings")
+
+        n_total = self.embeddings.shape[0]
+        n_samples = min(self.n_samples, len(self.unlabeled_indices))
+
+        # Cold-start fallback: no labeled samples means no anchor for distance computation.
+        if len(self.labeled_indices) == 0:
+            logger.warning(
+                "sklearn_coreset: no labeled samples, falling back to random"
+            )
+            return self._random()
+
+        # Build y: labeled samples get a dummy label (0), everything else (unlabeled
+        # AND validation) gets MISSING_LABEL so only true labeled samples serve as anchors.
+        # CoreSet only uses y to distinguish labeled from unlabeled -- label values are ignored.
+        y = np.full(n_total, MISSING_LABEL, dtype=float)
+        y[self.labeled_indices] = 0
+
+        # Find the noise cluster, we don't want to sample from there
+        possible_noise_labels = ["nan", None, "no_call", np.nan, "NaN"]
+        noise_indices = []
+        for p in possible_noise_labels:
+            if p in self.label_to_idx.keys():
+                noise_indices.append(self.label_to_idx[p])
+
+        strategy = CoreSetFarFromNoise(missing_label=MISSING_LABEL)
+
+        labeled_noise_indices = np.array(self.labeled_indices)[
+            (self.labels[:, noise_indices] == 1).any(axis=1)
+        ]
+        selected_indices, utilities = strategy.query(
+            X=self.embeddings,
+            y=y,
+            labeled_noise_indices=labeled_noise_indices,
+            unlabeled_indices=self.unlabeled_indices,
+            candidates=np.array(self.unlabeled_indices),
+            batch_size=n_samples,
+            return_utilities=True,
+            noise_indices=noise_indices,
+        )
+
+        # utilities[0] = initial min-distance-to-labeled for every candidate -- use for
+        # visualisation / relative ranking of non-selected samples.
+        util_scores = utilities[0][self.unlabeled_indices]
+        utility = self._normalize(np.clip(util_scores, 0, None)) * 0.99
+
+        # Override utility to 1.0 for the samples scikit-activeml actually chose via its
+        # greedy k-center algorithm. This ensures select() reproduces the greedy selection
+        # rather than a naive top-K on the initial distances (which clusters picks together).
+        unlabeled_pos = {idx: pos for pos, idx in enumerate(self.unlabeled_indices)}
+        for idx in selected_indices:
+            if idx in unlabeled_pos:
+                utility[unlabeled_pos[idx]] = 1.0
+
+        logger.info(
+            f"sklearn_coreset - selected {len(selected_indices)} samples via greedy k-center"
+        )
+        return utility.astype(np.float32)
+
     def _sklearn_coreset(self) -> np.ndarray:
         """
         Greedy k-center (CoreSet) sampling using scikit-activeml.
@@ -846,8 +1240,6 @@ class SamplingStrategy:
             utility: Normalized min-distance-to-labeled scores [0, 1]
                      where 1 = farthest from any labeled point
         """
-        from skactiveml.pool import CoreSet
-        from skactiveml.utils import MISSING_LABEL
 
         if self.embeddings is None:
             raise ValueError("sklearn_coreset requires embeddings")
@@ -1126,8 +1518,7 @@ class WarmupStrategy:
         return KMeansEstimation(
             embeddings=self.embeddings[self.candidate_indices],
             num_classes=self.n_classes,
-            n_samples=self.n_samples,
-            random_state=self.rng,
+            random_state=self.rng.integers(80),
         )
 
     def _eigenvalues(self) -> np.ndarray:
@@ -1159,7 +1550,7 @@ class WarmupStrategy:
         return uniformEmbeddingSampling(
             embeddings=self.embeddings[self.candidate_indices],
             n_samples=self.n_samples,
-            random_state=self.rng,
+            random_state=self.rng.integers(80),
         )
 
     def _metadata(self) -> np.ndarray:
@@ -1305,3 +1696,238 @@ if __name__ == "__main__":
     fig.suptitle(f"Prediction density — method: '{method_to_test}'", fontsize=13)
     plt.tight_layout()
     plt.show()
+
+
+class CoreSetFarFromNoise(CoreSet):
+    def query(
+        self,
+        X,
+        y,
+        labeled_noise_indices,
+        unlabeled_indices,
+        candidates=None,
+        batch_size=1,
+        return_utilities=False,
+        noise_indices=None,
+    ):
+        """Determines for which candidate samples labels are to be queried.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data set, usually complete, i.e., including the labeled
+            and unlabeled samples.
+        y : array-like of shape (n_samples,)
+            Labels of the training data set (possibly including unlabeled ones
+            indicated by `self.missing_label`).
+        candidates : None or array-like of shape (n_candidates), dtype=int or \
+                array-like of shape (n_candidates, n_features), default=None
+            - If `candidates` is `None`, the unlabeled samples from
+              `(X,y)` are considered as `candidates`.
+            - If `candidates` is of shape `(n_candidates,)` and of type
+              `int`, `candidates` is considered as the indices of the
+              samples in `(X,y)`.
+            - If `candidates` is of shape `(n_candidates, *)`, the
+              candidate samples are directly given in `candidates` (not
+              necessarily contained in `X`).
+        batch_size : int, default=1
+            The number of samples to be selected in one AL cycle.
+        return_utilities : bool, default=False
+            If `True`, also return the utilities based on the query strategy.
+
+        Returns
+        -------
+        query_indices : numpy.ndarray of shape (batch_size,)
+            The query indices indicate for which candidate sample a label is
+            to be queried, e.g., `query_indices[0]` indicates the first
+            selected sample.
+
+            - If `candidates` is `None` or of shape
+              `(n_candidates,)`, the indexing refers to the samples in
+              `X`.
+            - If `candidates` is of shape `(n_candidates, n_features)`,
+              the indexing refers to the samples in `candidates`.
+        utilities : numpy.ndarray of shape (batch_size, n_samples) or \
+                numpy.ndarray of shape (batch_size, n_candidates)
+            The utilities of samples after each selected sample of the batch,
+            e.g., `utilities[0]` indicates the utilities used for selecting
+            the first sample (with index `query_indices[0]`) of the batch.
+            Utilities for labeled samples will be set to np.nan.
+
+            - If `candidates` is `None` or of shape
+              `(n_candidates,)`, the indexing refers to the samples in
+              `X`.
+            - If `candidates` is of shape `(n_candidates, n_features)`,
+              the indexing refers to the samples in `candidates`.
+        """
+        X, y, candidates, batch_size, return_utilities = self._validate_data(
+            X, y, candidates, batch_size, return_utilities, reset=True
+        )
+
+        _, mapping = self._transform_candidates(candidates, X, y)
+
+        query_indices, utilities = self.k_greedy_center_noise(
+            X,
+            y,
+            labeled_noise_indices,
+            unlabeled_indices,
+            batch_size,
+        )
+
+        if return_utilities:
+            return query_indices, utilities
+        else:
+            return query_indices
+
+    def k_greedy_center_noise(
+        self,
+        X,
+        y,
+        labeled_indices,
+        unlabeled_indices,
+        batch_size=1,
+        n_new_cand=None,
+    ):
+        """
+        An active learning method that greedily forms a batch to minimize the
+        maximum distance to a cluster center among all unlabeled datapoints.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+        Training data set, usually complete, i.e., including the labeled and
+        unlabeled samples.
+        y : np.ndarray of shape (n_samples,)
+            Labels of the training data set (possibly including unlabeled ones
+            indicated by `self.missing_label`).
+        batch_size : int, default=1
+        The number of samples to be selected in one AL cycle.
+        random_state : None or int or np.random.RandomState, default=None
+        Random state for candidate selection.
+        missing_label : scalar or string or np.nan or None, default=np.nan
+        Value to represent a missing label.
+        mapping : None or np.ndarray of shape (n_candidates,), default=None
+        Index array that maps `candidates` to `X` (`candidates = X[mapping]`).
+        n_new_cand : int or None, default=None
+        The number of new candidates that are additionally added to `X`.
+        Only used for the case, that in the query function with the shape of
+        `candidates` is `(n_candidates, n_feature)`.
+
+        Returns
+        -------
+        query_indices : numpy.ndarray of shape (batch_size)
+            The query_indices indicate for which candidate sample a label is
+            to queried, e.g., `query_indices[0]` indicates the first selected
+            sample.
+
+            - If `candidates` is `None` or of shape
+            `(n_candidates,)`, the indexing refers to the samples in
+            `X`.
+            - If `candidates` is of shape `(n_candidates, n_features)`,
+            the indexing refers to the samples in `candidates`.
+        utilities : numpy.ndarray of shape (batch_size, n_samples) or \
+                numpy.ndarray of shape (batch_size, n_candidates)
+            The utilities of samples after each selected sample of the batch,
+            e.g., `utilities[0]` indicates the utilities used for selecting
+            the first sample (with index `query_indices[0]`) of the batch.
+            Utilities for labeled samples will be set to np.nan.
+
+            - If `candidates` is `None` or of shape
+            `(n_candidates,)`, the indexing refers to the samples in
+            `X`.
+            - If `candidates` is of shape `(n_candidates, n_features)`,
+            the indexing refers to the samples in `candidates`.
+        """
+
+        if not isinstance(batch_size, int):
+            raise TypeError("batch_size must be a integer")
+
+        # initialize the utilities matrix with
+        if n_new_cand is None:
+            utilities = np.zeros(shape=(batch_size, X.shape[0]))
+        elif isinstance(n_new_cand, int):
+            if n_new_cand == len(unlabeled_indices):
+                utilities = np.zeros(shape=(batch_size, n_new_cand))
+            else:
+                raise ValueError("n_new_cand must equal to the length of mapping array")
+        else:
+            raise TypeError("Only n_new_cand with type int is supported.")
+
+        query_indices = np.zeros(batch_size, dtype=int)
+
+        for i in range(batch_size):
+            if i == 0:
+                update_dist = self.update_distances_noise(
+                    X, labeled_indices, unlabeled_indices
+                )
+            else:
+                latest_dist = utilities[i - 1]
+                update_dist = self.update_distances_noise(
+                    X=X,
+                    cluster_centers=[query_indices[i - 1]],
+                    mapping=unlabeled_indices,
+                    latest_distance=latest_dist,
+                )
+
+            if n_new_cand is None:
+                utilities[i] = update_dist
+            else:
+                utilities[i] = update_dist[unlabeled_indices]
+
+            # select index
+            query_indices[i] = rand_argmax(
+                utilities[i], random_state=self.random_state_
+            )[0]
+
+        return query_indices, utilities
+
+    def update_distances_noise(self, X, cluster_centers, mapping, latest_distance=None):
+        """
+        Update minimum distances by given cluster centers.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data set, usually complete, i.e., including the labeled and
+            unlabeled samples.
+        cluster_centers : array-like of shape (n_cluster_centers)
+            Indices of cluster centers.
+        mapping : np.ndarray of shape (n_candidates, ), default=None
+            Index array that maps `candidates` to `X` (`candidates = X[mapping]`).
+        latest_distance : array-like of shape (n_samples) default None
+            The distance between each sample and its nearest center. Used to
+            speed up the computation of distances for the next selected sample.
+
+        Returns
+        -------
+        result-dist : np.ndarray of shape (1, n_samples)
+            - If there aren't any cluster centers existing, the default distance
+            will be 0.
+            - If there are some cluster center exist, the return will be the
+            distance between each sample and its nearest center after each selected
+            sample of the batch. In the case of cluster center the value will be
+            `np.nan`.
+            - For the case, that indices aren't in `mapping`, the corresponding
+            value in `result-dist` will be also `np.nan`.
+        """
+        dist = np.zeros(shape=X.shape[0])
+
+        if len(cluster_centers) > 0:
+            cluster_center_feature = X[cluster_centers]
+            _, dist = pairwise_distances_argmin_min(X, cluster_center_feature)
+
+        if latest_distance is not None:
+            sum_dist = np.nansum(latest_distance)
+            latest_distance_tmp = latest_distance
+            if sum_dist == 0:
+                latest_distance_tmp = latest_distance.copy()
+                latest_distance_tmp[latest_distance_tmp == 0] = np.inf
+            l_distance = np.zeros(shape=X.shape[0])
+            l_distance[mapping] = latest_distance_tmp[mapping]
+            dist = np.minimum(l_distance, dist)
+
+        result_dist = np.full(X.shape[0], np.nan)
+        result_dist[mapping] = dist[mapping]
+        result_dist[cluster_centers] = np.nan
+
+        return result_dist

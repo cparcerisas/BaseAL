@@ -543,7 +543,9 @@ class ActiveLearner:
             logger.info("Using CrossEntropyLoss for single-label classification")
 
         self.sampling_strategy = SamplingStrategy(
-            method=sampling_strategy, n_samples=n_samples_per_iteration
+            method=sampling_strategy,
+            n_samples=n_samples_per_iteration,
+            label_to_idx=self.label_to_idx,
         )
         logger.info(
             f"Initialized '{sampling_strategy}' sampling strategy with n_samples={n_samples_per_iteration}"

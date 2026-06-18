@@ -1,8 +1,11 @@
+# %%
 import pathlib
 
 import numpy as np
 import pandas as pd
 from renumics import spotlight
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import normalize
 from tqdm import tqdm
 
 whale_set = pathlib.Path("/mnt/fscompute_shared/biodcase_AL26/ATBFL_BASEAL")
@@ -56,6 +59,13 @@ for dataset in all_sets:
                 for l in unique_labels:
                     if type(l) == str:
                         detections[l] = detections.label.str.contains(l)
+
+                embeddings_norm = normalize(np.array(embeddings), norm="l2")
+                kmeans = KMeans(
+                    n_clusters=len(unique_labels), random_state=42, n_init="auto"
+                )
+                detections["clusters"] = kmeans.fit_predict(embeddings_norm)
+
                 detections.to_pickle(db_path.joinpath("all_samples.pkl"))
             else:
                 detections = pd.read_pickle(db_path.joinpath("all_samples.pkl"))
@@ -66,8 +76,21 @@ for dataset in all_sets:
             else:
                 all_detections = pd.concat([all_detections, detections])
 
+# %%
+import matplotlib.pyplot as plt
+
+for s, set_samples in all_detections.groupby("set"):
+    percentages_list = []
+    for c, cluster_samples in set_samples.groupby("clusters"):
+        percentage_noise = cluster_samples.noise.sum() / len(cluster_samples)
+        print(s, c, percentage_noise)
+        percentages_list.append(percentage_noise)
+    plt.hist(percentages_list)
+    plt.show()
 
 dtype = {"embedding": spotlight.media.Embedding}
 spotlight.show(
     all_detections, port=54426, host="127.0.0.1", dtype=dtype, no_browser=True
 )
+
+# %%
